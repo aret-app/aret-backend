@@ -1,0 +1,20 @@
+[package]
+name = "aret-auth"
+description = "Request authentication for Aret services (Ory Kratos, ADR-0008)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+aret-common.workspace = true
+axum.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true

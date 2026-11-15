@@ -1,0 +1,9 @@
+# Not needed inside the image build
+target/
+.git/
+.env
+.env.*
+*.md
+
+# The image already has the right Rust; skip rustup reading the pin (avoids extra downloads)
+rust-toolchain.toml

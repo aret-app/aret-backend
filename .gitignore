@@ -1,0 +1,10 @@
+# Build output
+/target
+
+# Private local config (never commit)
+.env
+.env.*
+!.env.example
+
+.DS_Store
+CLAUDE.md
