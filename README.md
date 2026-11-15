@@ -40,6 +40,43 @@ We follow the [Google Rust style guide](https://google.github.io/styleguide/rust
 `cargo fmt`, `clippy.toml` and the lints in `Cargo.toml`. Notes on the nightly-only formatting rules
 we follow by hand are in [rustfmt.toml](rustfmt.toml).
 
+## Local stack (Docker Compose)
+Everything the services need, on your computer, with one command ([compose.yaml](compose.yaml)):
+
+| Service | Image | Address (this computer only) |
+|---|---|---|
+| PostgreSQL 18 + PostGIS 3.7 | built from [dev/postgres/Dockerfile](dev/postgres/Dockerfile) (official `postgres:18` + PGDG PostGIS; works on ARM) | `127.0.0.1:5432` |
+| Ory Kratos (accounts, ADR-0008) | `oryd/kratos:v26.2.0` | public `:4433`, admin `:4434` |
+| NATS JetStream (events, ADR-0009) | `nats:2.15-alpine` | `:4222`, monitoring `:8222` |
+| Valkey (cache) | `valkey/valkey:9.0-alpine` | `:6379` |
+| RustFS (S3-compatible files; MinIO is discontinued) | `rustfs/rustfs:1.0.5` | S3 `:9000`, console http://127.0.0.1:9001/rustfs/console/ |
+| Mailpit (catches all emails) | `axllent/mailpit:v1.33` | web UI `:8025` |
+| aret-identity / aret-tracks | built from this repo | `:8081` / `:8082` |
+
+Requirements: Docker with Compose (e.g. `brew install colima docker docker-compose`, then `colima start`).
+
+```bash
+scripts/dev-env.sh            # once: creates your private .env with random passwords
+docker compose up -d          # start (add --build after changing Rust code)
+docker compose ps             # status; kratos-migrate should show "exited (0)"
+docker compose logs -f kratos # follow one service's logs
+docker compose down           # stop; `down -v` also deletes all local data
+```
+
+Postgres creates one role per service on first start ([dev/postgres/20-aret.sh](dev/postgres/20-aret.sh)):
+`kratos` owns database `kratos`; `tracks` owns schema `tracks` in database `aret`.
+Kratos config: [dev/kratos/](dev/kratos/) — accounts hold only a verified email (GDPR data minimisation).
+
+Try a registration the way the iOS app will (Kratos API flow), then open Mailpit at
+http://127.0.0.1:8025 to see the verification email:
+```bash
+FLOW=$(curl -s 127.0.0.1:4433/self-service/registration/api | jq -r .id)
+curl -s -X POST "127.0.0.1:4433/self-service/registration?flow=$FLOW" \
+  -H 'Content-Type: application/json' \
+  -d "{\"method\":\"password\",\"traits\":{\"email\":\"hiker@example.com\"},\"password\":\"$(openssl rand -base64 18)\"}" \
+  | jq '{identity: .identity.id, email: .identity.traits.email, got_session_token: (.session_token != null)}'
+```
+
 ## Configuration (environment variables)
 | Variable | Default | Meaning |
 |---|---|---|

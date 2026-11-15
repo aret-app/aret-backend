@@ -5,5 +5,10 @@ target/
 .env.*
 *.md
 
+# Local stack files: not part of any image (changing them shouldn't trigger a Rust rebuild)
+compose.yaml
+dev/
+scripts/
+
 # The image already has the right Rust; skip rustup reading the pin (avoids extra downloads)
 rust-toolchain.toml

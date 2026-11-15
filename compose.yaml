@@ -1,0 +1,150 @@
+# Local development stack — aret-backend#2. NOT for production (deployment lives in aret-infra).
+#
+#   scripts/dev-env.sh          once: creates .env with random local passwords and secrets
+#   docker compose up -d        start everything (add --build after changing Rust code)
+#   docker compose ps           status
+#   docker compose logs -f kratos
+#   docker compose down         stop (add -v to also delete all local data)
+#
+# Every port is bound to 127.0.0.1: reachable from this computer only, never from the network.
+
+name: aret
+
+services:
+  # ---------------------------------------------------------------- data
+  postgres:
+    # Official postgres 18 + PostGIS 3 from the PostgreSQL apt repository (dev/postgres/Dockerfile);
+    # the postgis/postgis image has no ARM build.
+    build: dev/postgres
+    image: aret-postgres:dev
+    pull_policy: build
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/dev-env.sh}
+      POSTGRES_DB: aret
+      # Used by dev/postgres/init/20-aret.sh to create one role per service
+      KRATOS_DB_PASSWORD: ${KRATOS_DB_PASSWORD:?run scripts/dev-env.sh}
+      TRACKS_DB_PASSWORD: ${TRACKS_DB_PASSWORD:?run scripts/dev-env.sh}
+    volumes:
+      - postgres-data:/var/lib/postgresql   # Postgres 18 images keep data under this path
+      # Runs once, when the data volume is first created (after PostGIS's own setup script)
+      - ./dev/postgres/20-aret.sh:/docker-entrypoint-initdb.d/20-aret.sh:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d aret"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  valkey:   # cache and rate limits only: no persistence
+    image: valkey/valkey:9.0-alpine
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  nats:   # event bus, ADR-0009
+    image: nats:2.15-alpine
+    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
+    volumes:
+      - nats-data:/data
+    ports:
+      - "127.0.0.1:4222:4222"   # clients
+      - "127.0.0.1:8222:8222"   # monitoring
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8222/healthz?js-enabled-only=true"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rustfs:   # S3-compatible file storage for local development (replaces discontinued MinIO)
+    image: rustfs/rustfs:1.0.5
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?run scripts/dev-env.sh}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?run scripts/dev-env.sh}
+      RUSTFS_CONSOLE_ENABLE: "true"
+    volumes:
+      - rustfs-data:/data
+    ports:
+      - "127.0.0.1:9000:9000"   # S3 API
+      - "127.0.0.1:9001:9001"   # web console: http://127.0.0.1:9001/rustfs/console/
+
+  mailpit:   # catches every email the stack sends; nothing leaves your computer
+    image: axllent/mailpit:v1.33
+    ports:
+      - "127.0.0.1:8025:8025"   # web UI (SMTP 1025 stays inside the stack)
+
+  # ---------------------------------------------------------------- identity (ADR-0008)
+  kratos-migrate:   # one-shot: creates/updates Kratos's tables, then exits
+    image: oryd/kratos:v26.2.0
+    command: ["migrate", "sql", "-e", "--yes"]
+    environment:
+      DSN: postgres://kratos:${KRATOS_DB_PASSWORD}@postgres:5432/kratos?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  kratos:
+    image: oryd/kratos:v26.2.0
+    command: ["serve", "--config", "/etc/config/kratos/kratos.yml", "--dev", "--watch-courier"]
+    environment:
+      DSN: postgres://kratos:${KRATOS_DB_PASSWORD}@postgres:5432/kratos?sslmode=disable
+      SECRETS_COOKIE: '["${KRATOS_COOKIE_SECRET:?run scripts/dev-env.sh}"]'
+      SECRETS_CIPHER: '["${KRATOS_CIPHER_SECRET:?run scripts/dev-env.sh}"]'
+    volumes:
+      - ./dev/kratos:/etc/config/kratos:ro
+    ports:
+      - "127.0.0.1:4433:4433"   # public API (the app talks to this)
+      - "127.0.0.1:4434:4434"   # admin API (never exposed in production)
+    depends_on:
+      kratos-migrate:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_started
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- our services
+  identity:
+    build:
+      context: .
+      args:
+        SERVICE: aret-identity
+    image: aret-identity:dev
+    pull_policy: build   # built from this repo, never downloaded
+    environment:
+      RUST_LOG: info
+    ports:
+      - "127.0.0.1:8081:8080"
+    depends_on:
+      kratos:
+        condition: service_started
+    restart: unless-stopped
+
+  tracks:
+    build:
+      context: .
+      args:
+        SERVICE: aret-tracks
+    image: aret-tracks:dev
+    pull_policy: build   # built from this repo, never downloaded
+    environment:
+      RUST_LOG: info
+    ports:
+      - "127.0.0.1:8082:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  nats-data:
+  rustfs-data:
