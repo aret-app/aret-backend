@@ -1,0 +1,19 @@
+[package]
+name = "aret-tracks"
+description = "tracks-svc: recorded tracks and sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+aret-common.workspace = true
+aret-auth.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

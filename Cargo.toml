@@ -1,0 +1,53 @@
+# Aret backend workspace — ADR-0003 (one Cargo workspace, one binary/container per service)
+[workspace]
+resolver = "3"
+members = ["crates/*", "services/*"]
+
+# Settings every crate inherits with `field.workspace = true`
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "AGPL-3.0-only"
+repository = "https://github.com/aret-app/aret-backend"
+publish = false
+
+# One place for dependency versions; crates opt in with `name.workspace = true`
+[workspace.dependencies]
+# our crates
+aret-common = { path = "crates/aret-common" }
+aret-auth = { path = "crates/aret-auth" }
+
+# HTTP server
+axum = "0.8.9"
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tower-http = { version = "0.6.11", features = ["trace"] }
+
+# logging
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+
+# data and errors
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+
+# tests only (call a router in-process with `oneshot`)
+tower = { version = "0.5", features = ["util"] }
+
+# Lint rules every crate inherits with `[lints] workspace = true`.
+# Code follows the Google Rust style guide: https://google.github.io/styleguide/rustguide.html
+# CI runs clippy with `-D warnings`, so every warning below fails the build.
+[workspace.lints.rust]
+unsafe_code = "forbid"   # no `unsafe` in Aret services
+missing_docs = "warn"    # doc comments on public APIs
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }   # includes ptr_arg, borrowed_box, wrong_self_convention, …
+unwrap_used = "warn"                      # prefer patterns or `expect("reason")`; allowed in tests
+
+# Small, fast release binaries
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
