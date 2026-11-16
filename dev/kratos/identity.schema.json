@@ -1,0 +1,30 @@
+{
+  "$id": "urn:aret:identity:default:v1",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Aret account",
+  "description": "Data minimisation (GDPR): an account holds only a verified email address.",
+  "type": "object",
+  "properties": {
+    "traits": {
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "title": "Email",
+          "maxLength": 320,
+          "ory.sh/kratos": {
+            "credentials": {
+              "password": { "identifier": true },
+              "code": { "identifier": true, "via": "email" }
+            },
+            "verification": { "via": "email" },
+            "recovery": { "via": "email" }
+          }
+        }
+      },
+      "required": ["email"],
+      "additionalProperties": false
+    }
+  }
+}
