@@ -57,7 +57,7 @@ Everything the services need, on your computer, with one command ([compose.yaml]
 Requirements: Docker with Compose (e.g. `brew install colima docker docker-compose`, then `colima start`).
 
 ```bash
-scripts/dev-env.sh            # once: creates your private .env with random passwords
+scripts/dev-env.sh            # once: private .env + session-JWT keys in dev/secrets/ (git-ignored)
 docker compose up -d          # start (add --build after changing Rust code)
 docker compose ps             # status; kratos-migrate should show "exited (0)"
 docker compose logs -f kratos # follow one service's logs
@@ -86,7 +86,8 @@ edit a file and reload the page.
 - **Services:** health of Kratos, aret-identity and aret-tracks
 - **Account:** sign up, verify the email with the code from Mailpit, log in, see the session, log out
   (Kratos *browser* flows: cookies + CSRF, like a real web app; the iOS app uses the API flows)
-- **tracks API:** calls `GET /v1/tracks` (401 until aret-backend#3 verifies Kratos sessions)
+- **tracks API:** *Get JWT* (Kratos `whoami?tokenize_as=aret`), then `GET /v1/tracks` with it → 200;
+  without a JWT → 401
 - **Map:** the pilot tiles from `aret-tiles.pages.dev` with a first outdoor style (MapLibre GL JS 6)
 - **Requests:** every call the page makes, with its status
 
@@ -100,12 +101,27 @@ reloads on every save. It runs on `http://127.0.0.1:5500` and calls the gateway 
 allows exactly that origin with cookies. Use `127.0.0.1`, not `localhost`, or the browser treats the
 login cookies as third-party and drops them. The stack must be running (`docker compose up -d`).
 
+## Login check (session JWTs)
+Services never call Kratos per request ([ADR-0008](https://github.com/aret-app/aret-docs/blob/main/docs/adr/0008-authentication.md)):
+
+1. A logged-in client asks Kratos for a short-lived JWT: `GET /sessions/whoami?tokenize_as=aret`
+   (cookie or session token) → field `tokenized`. Template in [dev/kratos/kratos.yml](dev/kratos/kratos.yml):
+   ES256, 10 minutes, audience `aret-api` ([jwt-claims.jsonnet](dev/kratos/jwt-claims.jsonnet)).
+2. It calls our APIs with `Authorization: Bearer <jwt>`.
+3. `crates/aret-auth` verifies signature (public JWKS), `exp`/`nbf` (±30 s), issuer and audience, then gives
+   the handler an `AuthenticatedUser { id }` (the Kratos identity id). Anything else → 401 problem+json.
+
+The key pair comes from `scripts/dev-env.sh` (`dev/secrets/`, git-ignored): Kratos gets the private key,
+services the public one. Production keys will be managed separately (never these dev keys).
+
 ## Configuration (environment variables)
 | Variable | Default | Meaning |
 |---|---|---|
 | `ARET_HTTP_ADDR` | `127.0.0.1:<service port>` | Listen address (`0.0.0.0:8080` in containers) |
 | `RUST_LOG` | `info` | Log level, e.g. `debug` or `aret_tracks=debug,info` |
 | `ARET_LOG_FORMAT` | text | `json` for structured logs (set in containers) |
+| `ARET_JWKS_PATH` | `dev/secrets/jwks.public.json` | Public keys that verify Kratos session JWTs (services with login) |
+| `ARET_JWT_ISSUER` | `http://127.0.0.1:8080/kratos/` | Expected `iss` of session JWTs: Kratos's public URL |
 
 Never commit secrets: use a git-ignored `.env` and commit only `.env.example`.
 
