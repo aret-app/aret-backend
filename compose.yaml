@@ -1,6 +1,6 @@
 # Local development stack — aret-backend#2. NOT for production (deployment lives in aret-infra).
 #
-#   scripts/dev-env.sh          once: creates .env with random local passwords and secrets
+#   scripts/dev-env.sh          once: creates .env and dev/secrets/ (passwords, JWT signing key)
 #   docker compose up -d        start everything (add --build after changing Rust code)
 #   http://127.0.0.1:8080       test web app (accounts, API calls, map)
 #   docker compose ps           status
@@ -100,6 +100,8 @@ services:
       SECRETS_CIPHER: '["${KRATOS_CIPHER_SECRET:?run scripts/dev-env.sh}"]'
     volumes:
       - ./dev/kratos:/etc/config/kratos:ro
+      # Private key for session JWTs (scripts/dev-env.sh); never in git
+      - ./dev/secrets/jwks.private.json:/etc/config/kratos-secrets/jwks.private.json:ro
     ports:
       - "127.0.0.1:4433:4433"   # public API (the app talks to this)
       - "127.0.0.1:4434:4434"   # admin API (never exposed in production)
@@ -136,6 +138,11 @@ services:
     pull_policy: build   # built from this repo, never downloaded
     environment:
       RUST_LOG: info
+      # Verify Kratos session JWTs (crates/aret-auth)
+      ARET_JWKS_PATH: /run/aret/jwks.public.json
+      ARET_JWT_ISSUER: http://127.0.0.1:8080/kratos/
+    volumes:
+      - ./dev/secrets/jwks.public.json:/run/aret/jwks.public.json:ro
     ports:
       - "127.0.0.1:8082:8080"
     depends_on:

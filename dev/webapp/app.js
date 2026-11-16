@@ -13,11 +13,14 @@ const $ = (selector) => document.querySelector(selector);
 // Verification flow started by registration (Kratos sends the code right away).
 let verificationFlowId = null;
 
+// Session JWT for our services (Kratos tokenizer template "aret"), sent as a Bearer token.
+let sessionJwt = null;
+
 // ---------------------------------------------------------------- HTTP + request log
 
 /** Calls the backend with cookies and JSON, logs it, and never throws on HTTP errors. */
-async function call(method, url, body) {
-  const headers = { Accept: "application/json" };
+async function call(method, url, body, extraHeaders = {}) {
+  const headers = { Accept: "application/json", ...extraHeaders };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   let response;
   try {
@@ -253,15 +256,48 @@ $("#logout").addEventListener("click", async () => {
   if (!start.ok) return showMessage(kratosMessages(start.data), "bad");
   await call("GET", `${KRATOS}/self-service/logout?token=${start.data.logout_token}`);
   verificationFlowId = null;
+  setJwt(null);
   showMessage("Logged out.");
   await refreshSession();
 });
 
-// ---------------------------------------------------------------- tracks API
+// ---------------------------------------------------------------- session JWT + tracks API
+
+/** Decodes a JWT's payload for display only. The services verify the signature, not this page. */
+function jwtClaims(token) {
+  const payload = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+  return JSON.parse(atob(payload));
+}
+
+function setJwt(token) {
+  sessionJwt = token;
+  $("#jwt-info").hidden = !token;
+  if (!token) return;
+  const claims = jwtClaims(token);
+  $("#jwt-sub").textContent = claims.sub;
+  $("#jwt-aud").textContent = [].concat(claims.aud ?? "—").join(", ");
+  $("#jwt-iss").textContent = claims.iss;
+  $("#jwt-exp").textContent = new Date(claims.exp * 1000).toLocaleTimeString();
+}
+
+$("#get-jwt").addEventListener("click", async () => {
+  const result = await call("GET", `${KRATOS}/sessions/whoami?tokenize_as=aret`);
+  if (!result.ok || !result.data?.tokenized) {
+    setJwt(null);
+    $("#api-result").textContent =
+      `HTTP ${result.status}: no JWT. Log in first.\n${JSON.stringify(result.data, null, 2)}`;
+    return;
+  }
+  setJwt(result.data.tokenized);
+  $("#api-result").textContent = "Got a session JWT. Now call the API.";
+});
 
 $("#call-tracks").addEventListener("click", async () => {
-  const result = await call("GET", `${GATEWAY}/api/tracks/v1/tracks`);
-  $("#api-result").textContent = `HTTP ${result.status}\n${JSON.stringify(result.data, null, 2)}`;
+  const headers = sessionJwt ? { Authorization: `Bearer ${sessionJwt}` } : {};
+  const result = await call("GET", `${GATEWAY}/api/tracks/v1/tracks`, undefined, headers);
+  const sent = sessionJwt ? "with JWT" : "without JWT";
+  $("#api-result").textContent =
+    `HTTP ${result.status} (${sent})\n${JSON.stringify(result.data, null, 2)}`;
 });
 
 // ---------------------------------------------------------------- start

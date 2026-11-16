@@ -1,6 +1,6 @@
 [package]
 name = "aret-auth"
-description = "Request authentication for Aret services (Ory Kratos, ADR-0008)"
+description = "Request authentication for Aret services: Kratos session JWTs (ADR-0008)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,8 +11,14 @@ publish.workspace = true
 [dependencies]
 aret-common.workspace = true
 axum.workspace = true
+jsonwebtoken.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
+p256.workspace = true
 tokio.workspace = true
 tower.workspace = true
 
