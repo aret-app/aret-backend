@@ -1,0 +1,35 @@
+# CI for aret-backend: shared workflows from aret-infra (aret-infra#1).
+#   pull requests → Rust checks + test-build both images (amd64, arm64)
+#   push to main  → same, then publish multi-arch images to ghcr.io/aret-app/<service>
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write   # the image workflow pushes to GHCR on main
+
+# A newer push to the same pull request cancels the older run
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    uses: aret-app/aret-infra/.github/workflows/rust-ci.yml@main
+
+  images:
+    needs: rust
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [aret-identity, aret-tracks]
+    uses: aret-app/aret-infra/.github/workflows/container-image.yml@main
+    with:
+      image: ${{ matrix.service }}
+      build-args: SERVICE=${{ matrix.service }}
+      push: ${{ github.event_name == 'push' }}
