@@ -142,6 +142,7 @@ for (const tab of document.querySelectorAll(".tab")) {
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
     $("#register-form").hidden = tab.dataset.tab !== "register";
     $("#login-form").hidden = tab.dataset.tab !== "login";
+    $("#recover-panel").hidden = tab.dataset.tab !== "recover";
     showMessage("");
   });
 }
@@ -190,6 +191,105 @@ $("#login-form").addEventListener("submit", (event) => {
 
     form.reset();
     showMessage("Logged in.", "ok");
+    await refreshSession();
+  });
+});
+
+// ---------------------------------------------------------------- forgot password (recovery)
+// Kratos recovery flow with a one-time code (aret-backend#15):
+//   1. POST email → 200 state "sent_email" (same answer for unknown addresses)
+//   2. POST code  → 200 state "passed_challenge": signed in, and `continue_with` has
+//                   `show_settings_ui` with the settings flow (feature flag
+//                   use_continue_with_transitions; without it: 422 + redirect_browser_to ?flow=…)
+//                   wrong code → 200 with a message; after 5 wrong codes Kratos redirects to a
+//                   fresh flow (a new code is needed)
+//   3. POST new password to the settings flow → 200 "success"; other sessions are revoked
+
+let recoveryFlow = null;
+let settingsFlowId = null;
+
+function showRecoveryStep(step) {
+  $("#recover-email-form").hidden = step !== "email";
+  $("#recover-code-form").hidden = step !== "code";
+  $("#recover-password-form").hidden = step !== "password";
+}
+
+function restartRecovery() {
+  recoveryFlow = null;
+  settingsFlowId = null;
+  ["#recover-email-form", "#recover-code-form", "#recover-password-form"].forEach((id) => $(id).reset());
+  showRecoveryStep("email");
+}
+
+$("#recover-restart").addEventListener("click", () => {
+  restartRecovery();
+  showMessage("");
+});
+
+$("#recover-email-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  busy(form, async () => {
+    const start = await call("GET", `${KRATOS}/self-service/recovery/browser`);
+    if (!start.ok) return showMessage(kratosMessages(start.data), "bad");
+
+    const result = await call("POST", `${KRATOS}/self-service/recovery?flow=${start.data.id}`, {
+      method: "code",
+      csrf_token: csrfToken(start.data),
+      email: new FormData(form).get("email"),
+    });
+    if (!result.ok) return showMessage(kratosMessages(result.data), "bad");
+
+    recoveryFlow = result.data;
+    showRecoveryStep("code");
+    showMessage("If that address has an account, a recovery code is in Mailpit.", "ok");
+  });
+});
+
+$("#recover-code-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  busy(form, async () => {
+    const result = await call("POST", `${KRATOS}/self-service/recovery?flow=${recoveryFlow.id}`, {
+      method: "code",
+      csrf_token: csrfToken(recoveryFlow),
+      code: new FormData(form).get("code").trim(),
+    });
+
+    // Success: Kratos signed us in; the next step is the settings flow for a new password
+    const settingsStep = result.data?.continue_with?.find((s) => s.action === "show_settings_ui");
+    const legacyRedirect = result.status === 422 ? result.data?.redirect_browser_to : null;
+    if (settingsStep || legacyRedirect) {
+      settingsFlowId = settingsStep?.flow?.id ?? new URL(legacyRedirect).searchParams.get("flow");
+      showRecoveryStep("password");
+      return showMessage("Code accepted. Choose a new password.", "ok");
+    }
+    // Too many wrong codes: the browser followed Kratos's redirect to a brand-new flow
+    if (result.ok && result.data?.id !== recoveryFlow.id) {
+      restartRecovery();
+      return showMessage("Too many wrong codes. Request a new one.", "bad");
+    }
+    showMessage(kratosMessages(result.data), "bad");
+  });
+});
+
+$("#recover-password-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  busy(form, async () => {
+    const flow = await call("GET", `${KRATOS}/self-service/settings/flows?id=${settingsFlowId}`);
+    if (!flow.ok) return showMessage(kratosMessages(flow.data), "bad");
+
+    const result = await call("POST", `${KRATOS}/self-service/settings?flow=${settingsFlowId}`, {
+      method: "password",
+      csrf_token: csrfToken(flow.data),
+      password: new FormData(form).get("password"),
+    });
+    if (!result.ok || result.data?.state !== "success") {
+      return showMessage(kratosMessages(result.data), "bad");
+    }
+    restartRecovery();
+    showMessage("Password changed. You're signed in; every other device was signed out.", "ok");
     await refreshSession();
   });
 });
