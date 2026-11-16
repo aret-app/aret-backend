@@ -52,6 +52,7 @@ Everything the services need, on your computer, with one command ([compose.yaml]
 | RustFS (S3-compatible files; MinIO is discontinued) | `rustfs/rustfs:1.0.5` | S3 `:9000`, console http://127.0.0.1:9001/rustfs/console/ |
 | Mailpit (catches all emails) | `axllent/mailpit:v1.33` | web UI `:8025` |
 | aret-identity / aret-tracks | built from this repo | `:8081` / `:8082` |
+| Gateway + test web app (Caddy) | `caddy:2.11-alpine` | **http://127.0.0.1:8080** |
 
 Requirements: Docker with Compose (e.g. `brew install colima docker docker-compose`, then `colima start`).
 
@@ -76,6 +77,28 @@ curl -s -X POST "127.0.0.1:4433/self-service/registration?flow=$FLOW" \
   -d "{\"method\":\"password\",\"traits\":{\"email\":\"hiker@example.com\"},\"password\":\"$(openssl rand -base64 18)\"}" \
   | jq '{identity: .identity.id, email: .identity.traits.email, got_session_token: (.session_token != null)}'
 ```
+
+## Test web app (local only)
+**http://127.0.0.1:8080**, started with the stack: a small console to try the backend in a browser
+until the iOS app talks to it. Plain HTML + JavaScript in [dev/webapp/](dev/webapp/), no build step:
+edit a file and reload the page.
+
+- **Services:** health of Kratos, aret-identity and aret-tracks
+- **Account:** sign up, verify the email with the code from Mailpit, log in, see the session, log out
+  (Kratos *browser* flows: cookies + CSRF, like a real web app; the iOS app uses the API flows)
+- **tracks API:** calls `GET /v1/tracks` (401 until aret-backend#3 verifies Kratos sessions)
+- **Map:** the pilot tiles from `aret-tiles.pages.dev` with a first outdoor style (MapLibre GL JS 6)
+- **Requests:** every call the page makes, with its status
+
+The gateway ([dev/gateway/Caddyfile](dev/gateway/Caddyfile)) puts everything on one address, so the
+browser needs no CORS rules: `/kratos/*` → Kratos, `/api/identity/*` and `/api/tracks/*` → the
+services. Kratos's public URL is therefore `http://127.0.0.1:8080/kratos/` (port 4433 still works
+for curl and the iOS Simulator).
+
+**With VS Code Live Server ("Go Live"):** open `dev/webapp/index.html` and click *Go Live*; the page
+reloads on every save. It runs on `http://127.0.0.1:5500` and calls the gateway on `:8080`, which
+allows exactly that origin with cookies. Use `127.0.0.1`, not `localhost`, or the browser treats the
+login cookies as third-party and drops them. The stack must be running (`docker compose up -d`).
 
 ## Configuration (environment variables)
 | Variable | Default | Meaning |

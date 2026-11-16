@@ -8,16 +8,19 @@ version: v26.2.0
 
 serve:
   public:
-    base_url: http://127.0.0.1:4433/
+    # Reached through the local gateway (dev/gateway/Caddyfile), same address as the test web app,
+    # so browser login cookies work. Port 4433 stays open for curl and the iOS Simulator.
+    base_url: http://127.0.0.1:8080/kratos/
   admin:
     base_url: http://127.0.0.1:4434/
 
 selfservice:
-  # The iOS app uses Kratos's API flows (/self-service/*/api). Kratos still requires browser UI
-  # addresses; these point to a web UI we don't have yet.
-  default_browser_return_url: http://127.0.0.1:4455/
+  # Browser flows (cookies + CSRF) serve the test web app at http://127.0.0.1:8080 (dev/webapp/).
+  # The iOS app uses the API flows (/self-service/*/api, session tokens) instead.
+  default_browser_return_url: http://127.0.0.1:8080/
   allowed_return_urls:
-    - http://127.0.0.1:4455
+    - http://127.0.0.1:8080
+    - http://127.0.0.1:5500   # the console opened with VS Code Live Server
 
   methods:
     password:
@@ -27,13 +30,13 @@ selfservice:
 
   flows:
     error:
-      ui_url: http://127.0.0.1:4455/error
+      ui_url: http://127.0.0.1:8080/?flow-error
     settings:
-      ui_url: http://127.0.0.1:4455/settings
+      ui_url: http://127.0.0.1:8080/?settings
     login:
-      ui_url: http://127.0.0.1:4455/login
+      ui_url: http://127.0.0.1:8080/?login
     registration:
-      ui_url: http://127.0.0.1:4455/registration
+      ui_url: http://127.0.0.1:8080/?registration
       after:
         password:
           hooks:
@@ -41,11 +44,11 @@ selfservice:
     verification:
       enabled: true
       use: code
-      ui_url: http://127.0.0.1:4455/verification
+      ui_url: http://127.0.0.1:8080/?verification
     recovery:
       enabled: true
       use: code
-      ui_url: http://127.0.0.1:4455/recovery
+      ui_url: http://127.0.0.1:8080/?recovery
 
 # Password hashing: Argon2id (spec §9.2)
 hashers:

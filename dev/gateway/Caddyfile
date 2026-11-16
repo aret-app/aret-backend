@@ -1,0 +1,51 @@
+# Local gateway: the test web app and every API on ONE address, http://127.0.0.1:8080,
+# like the production gateway (spec §6.2). One origin means the browser needs no CORS rules
+# and Kratos's login cookies just work.
+#
+#   /                → test web app (dev/webapp/)
+#   /kratos/*        → Ory Kratos public API
+#   /api/identity/*  → aret-identity
+#   /api/tracks/*    → aret-tracks
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	encode zstd gzip
+
+	# Also allow the console to run from VS Code Live Server ("Go Live", http://127.0.0.1:5500),
+	# with cookies. Only that exact origin; use 127.0.0.1, not localhost, or the login cookies
+	# count as third-party and the browser drops them.
+	@liveServer header Origin http://127.0.0.1:5500
+	header @liveServer {
+		Access-Control-Allow-Origin "http://127.0.0.1:5500"
+		Access-Control-Allow-Credentials "true"
+		Access-Control-Allow-Headers "Accept, Content-Type, Authorization"
+		Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+		Vary Origin
+	}
+	# Browsers ask permission first ("preflight") for JSON POSTs; answer it here
+	@liveServerPreflight {
+		method OPTIONS
+		header Origin http://127.0.0.1:5500
+	}
+	handle @liveServerPreflight {
+		respond 204
+	}
+
+	handle_path /kratos/* {
+		reverse_proxy kratos:4433
+	}
+	handle_path /api/identity/* {
+		reverse_proxy identity:8080
+	}
+	handle_path /api/tracks/* {
+		reverse_proxy tracks:8080
+	}
+	handle {
+		header Cache-Control "no-store"   # always load the latest version while developing
+		root * /srv/webapp
+		file_server
+	}
+}
