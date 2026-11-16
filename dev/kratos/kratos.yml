@@ -27,12 +27,23 @@ selfservice:
       enabled: true
     code:
       enabled: true
+      config:
+        lifespan: 15m        # one-time codes (verification, recovery) expire after 15 minutes
+        max_submissions: 5   # then the flow is locked: no brute-forcing the 6 digits
 
   flows:
     error:
       ui_url: http://127.0.0.1:8080/?flow-error
     settings:
       ui_url: http://127.0.0.1:8080/?settings
+      # Changing the password needs a recent login (e.g. the one recovery just created)
+      privileged_session_max_age: 15m
+      after:
+        password:
+          hooks:
+            # A new password signs out every other device: someone who knew the old
+            # password loses access (aret-backend#15)
+            - hook: revoke_active_sessions
     login:
       ui_url: http://127.0.0.1:8080/?login
     registration:
@@ -40,15 +51,21 @@ selfservice:
       after:
         password:
           hooks:
-            - hook: session   # sign the user in right after registering
+            - hook: session               # sign the user in right after registering
+            - hook: show_verification_ui  # tell the client which verification flow got the code
     verification:
       enabled: true
       use: code
       ui_url: http://127.0.0.1:8080/?verification
     recovery:
+      # Forgot password: email → one-time code → signed in → settings flow sets a new password
       enabled: true
       use: code
       ui_url: http://127.0.0.1:8080/?recovery
+      lifespan: 1h
+      # Privacy: same answer for every address, and no email to addresses without an account,
+      # so nobody can find out who has an Aret account
+      notify_unknown_recipients: false
 
 # Session → short-lived JWT for our services (aret-backend#3, crates/aret-auth):
 #   GET /sessions/whoami?tokenize_as=aret   →  response field `tokenized`
@@ -62,6 +79,11 @@ session:
           ttl: 10m
           jwks_url: file:///etc/config/kratos-secrets/jwks.private.json
           claims_mapper_url: file:///etc/config/kratos/jwt-claims.jsonnet
+
+# After a flow, Kratos says what comes next in a `continue_with` list instead of a browser redirect.
+# Needed by the iOS app: without it, API recovery returns no session token (aret-backend#15).
+feature_flags:
+  use_continue_with_transitions: true
 
 # Password hashing: Argon2id (spec §9.2)
 hashers:

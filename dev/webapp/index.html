@@ -39,6 +39,7 @@
         <div class="tabs" role="tablist">
           <button class="tab active" data-tab="register" role="tab">Sign up</button>
           <button class="tab" data-tab="login" role="tab">Log in</button>
+          <button class="tab" data-tab="recover" role="tab">Forgot password?</button>
         </div>
         <form id="register-form" class="tab-panel">
           <label>Email <input name="email" type="email" required autocomplete="username"></label>
@@ -51,6 +52,25 @@
           <label>Password <input name="password" type="password" required autocomplete="current-password"></label>
           <button type="submit">Log in</button>
         </form>
+        <div id="recover-panel" class="tab-panel" hidden>
+          <p class="hint">1 · email → 2 · code from Mailpit → 3 · new password. Kratos gives the same
+            answer whether or not the address has an account.</p>
+          <form id="recover-email-form">
+            <label>Email <input name="email" type="email" required autocomplete="username"></label>
+            <button type="submit">Send recovery code</button>
+          </form>
+          <form id="recover-code-form" hidden>
+            <label>Recovery code <input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6 digits from Mailpit"></label>
+            <div class="row">
+              <button type="submit">Continue</button>
+              <button type="button" id="recover-restart" class="ghost">Start over</button>
+            </div>
+          </form>
+          <form id="recover-password-form" hidden>
+            <label>New password <input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
+            <button type="submit">Save new password</button>
+          </form>
+        </div>
       </div>
 
       <div id="signed-in" hidden>

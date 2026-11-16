@@ -114,6 +114,25 @@ Services never call Kratos per request ([ADR-0008](https://github.com/aret-app/a
 The key pair comes from `scripts/dev-env.sh` (`dev/secrets/`, git-ignored): Kratos gets the private key,
 services the public one. Production keys will be managed separately (never these dev keys).
 
+## Account recovery (forgot password)
+Kratos's recovery flow with a one-time code ([dev/kratos/kratos.yml](dev/kratos/kratos.yml), aret-backend#15):
+
+| Step | Browser (test console) | App (API flow, `/self-service/recovery/api`) |
+|---|---|---|
+| 1. Email | `POST recovery?flow=…` `{method: code, email, csrf_token}` → `sent_email` | same, no CSRF token |
+| 2. Code | → `200 passed_challenge`, signed in by cookie; `continue_with: show_settings_ui` | → `200 passed_challenge`; `continue_with: set_ory_session_token` **+** `show_settings_ui` |
+| 3. New password | `POST settings?flow=…` `{method: password, password}` → `success` | same, with `X-Session-Token` |
+
+Rules (all tested end to end):
+- **Privacy:** an address with no account gets the same answer and **no email**
+  (`notify_unknown_recipients: false`), so nobody can probe who has an account.
+- Codes expire after **15 minutes**; after **5 wrong codes** the flow restarts and a new code is needed.
+- Setting the password needs a recent login (`privileged_session_max_age: 15m`, recovery provides it).
+- A new password **signs out every other session** (`revoke_active_sessions` hook).
+- `feature_flags.use_continue_with_transitions: true` is required: without it the app gets a browser
+  redirect and **no session token** after recovery. Registration then needs the
+  `show_verification_ui` hook to keep returning the verification flow.
+
 ## Configuration (environment variables)
 | Variable | Default | Meaning |
 |---|---|---|
