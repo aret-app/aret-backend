@@ -20,8 +20,7 @@ concurrency:
 
 jobs:
   rust:
-    # TODO: switch to @main once aret-app/aret-infra's reusable workflows are merged
-    uses: aret-app/aret-infra/.github/workflows/rust-ci.yml@feat/reusable-ci
+    uses: aret-app/aret-infra/.github/workflows/rust-ci.yml@main
 
   images:
     needs: rust
@@ -29,7 +28,7 @@ jobs:
       fail-fast: false
       matrix:
         service: [aret-identity, aret-tracks]
-    uses: aret-app/aret-infra/.github/workflows/container-image.yml@feat/reusable-ci
+    uses: aret-app/aret-infra/.github/workflows/container-image.yml@main
     with:
       image: ${{ matrix.service }}
       build-args: SERVICE=${{ matrix.service }}
