@@ -2,6 +2,7 @@
 #
 #   scripts/dev-env.sh          once: creates .env with random local passwords and secrets
 #   docker compose up -d        start everything (add --build after changing Rust code)
+#   http://127.0.0.1:8080       test web app (accounts, API calls, map)
 #   docker compose ps           status
 #   docker compose logs -f kratos
 #   docker compose down         stop (add -v to also delete all local data)
@@ -142,6 +143,23 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- test web app
+  gateway:   # http://127.0.0.1:8080 — test web app + /kratos, /api/identity, /api/tracks
+    image: caddy:2.11-alpine
+    volumes:
+      - ./dev/gateway/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./dev/webapp:/srv/webapp:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      kratos:
+        condition: service_started
+      identity:
+        condition: service_started
+      tracks:
+        condition: service_started
     restart: unless-stopped
 
 volumes:

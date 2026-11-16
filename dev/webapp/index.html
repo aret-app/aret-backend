@@ -1,0 +1,107 @@
+<!doctype html>
+<!--
+  Aret backend test console — LOCAL DEVELOPMENT ONLY.
+  Served by the gateway in compose.yaml at http://127.0.0.1:8080. Plain HTML + JavaScript modules,
+  no build step: edit a file and reload the page.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aret test console</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@6.18.0/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1><span class="mark">▲</span> Aret <small>backend test console · local only</small></h1>
+    <nav>
+      <a href="http://127.0.0.1:8025" target="_blank" rel="noopener">Mailpit ↗</a>
+      <a href="http://127.0.0.1:9001/rustfs/console/" target="_blank" rel="noopener">RustFS ↗</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="card" id="status-card">
+      <div class="card-head">
+        <h2>Services</h2>
+        <button id="status-refresh" class="ghost">Refresh</button>
+      </div>
+      <ul id="status-list" class="status-list"></ul>
+    </section>
+
+    <section class="card" id="account-card">
+      <div class="card-head">
+        <h2>Account <small>Ory Kratos · browser flow</small></h2>
+      </div>
+
+      <div id="signed-out">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="register" role="tab">Sign up</button>
+          <button class="tab" data-tab="login" role="tab">Log in</button>
+        </div>
+        <form id="register-form" class="tab-panel">
+          <label>Email <input name="email" type="email" required autocomplete="username"></label>
+          <label>Password <input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
+          <p class="hint">Kratos rejects passwords found in known data breaches. Use a fresh one.</p>
+          <button type="submit">Create account</button>
+        </form>
+        <form id="login-form" class="tab-panel" hidden>
+          <label>Email <input name="identifier" type="email" required autocomplete="username"></label>
+          <label>Password <input name="password" type="password" required autocomplete="current-password"></label>
+          <button type="submit">Log in</button>
+        </form>
+      </div>
+
+      <div id="signed-in" hidden>
+        <dl class="session">
+          <dt>Email</dt><dd id="session-email"></dd>
+          <dt>Verified</dt><dd id="session-verified"></dd>
+          <dt>Identity id</dt><dd id="session-id" class="mono"></dd>
+          <dt>Session expires</dt><dd id="session-expires"></dd>
+        </dl>
+        <form id="verify-form" hidden>
+          <label>Verification code <input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6 digits from Mailpit"></label>
+          <div class="row">
+            <button type="submit">Verify email</button>
+            <button type="button" id="resend-code" class="ghost">Send a new code</button>
+          </div>
+        </form>
+        <button id="logout" class="ghost">Log out</button>
+      </div>
+
+      <p id="account-message" class="message" role="status"></p>
+    </section>
+
+    <section class="card" id="api-card">
+      <div class="card-head">
+        <h2>tracks API</h2>
+      </div>
+      <div class="row">
+        <button id="call-tracks">GET /v1/tracks</button>
+      </div>
+      <p class="hint">Expected for now: <code>401</code>. Services don't accept Kratos sessions until
+        aret-backend#3 (token verification) is done.</p>
+      <pre id="api-result" class="mono"></pre>
+    </section>
+
+    <section class="card map-card">
+      <div class="card-head">
+        <h2>Map <small>pilot tiles from aret-tiles.pages.dev</small></h2>
+      </div>
+      <div id="map"></div>
+    </section>
+
+    <section class="card log-card">
+      <div class="card-head">
+        <h2>Requests</h2>
+        <button id="log-clear" class="ghost">Clear</button>
+      </div>
+      <ol id="log" class="log mono" reversed></ol>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+  <script type="module" src="map.js"></script>
+</body>
+</html>
