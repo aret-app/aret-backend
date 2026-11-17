@@ -10,7 +10,7 @@ crates/
   aret-auth/     AuthenticatedUser extractor (Kratos verification: #3)
 services/
   identity/      aret-identity  — adapter for Ory Kratos           (port 8081)
-  tracks/        aret-tracks    — recorded tracks and sync          (port 8082)
+  tracks/        aret-tracks    — recorded tracks, PostGIS          (port 8082)
 ```
 
 ## Requirements
@@ -114,6 +114,24 @@ Services never call Kratos per request ([ADR-0008](https://github.com/aret-app/a
 The key pair comes from `scripts/dev-env.sh` (`dev/secrets/`, git-ignored): Kratos gets the private key,
 services the public one. Production keys will be managed separately (never these dev keys).
 
+## Tracks API (aret-tracks)
+Every route needs a session JWT (see *Login check*). JSON, errors as problem+json.
+
+| Route | What it does |
+|---|---|
+| `POST /v1/tracks` | Save a track: `{ id, title?, points: [{ lat, lon, ele, time }] }`. The **client generates `id`** (UUID v7): retrying the same upload returns **200** with the stored track instead of a duplicate; another user's id → 409. New → **201**. |
+| `GET /v1/tracks?limit=&cursor=` | My tracks, newest first (20 per page, max 100); `next_cursor` until the last page |
+| `GET /v1/tracks/{id}` | One track with all points; other users' tracks → 404 |
+
+The server computes **distance** (PostGIS, on the WGS 84 ellipsoid) and **ascent/descent** (changes under
+3 m are noise). Points are stored as one PostGIS `LineStringZM` (lon, lat, elevation, time as M) in table
+`tracks` ([migration](services/tracks/migrations/0001_tracks.sql)); migrations run at startup.
+Limits: 2–100,000 points, time never going backwards, title ≤ 200 characters, body ≤ 16 MB.
+
+**Tests against a real database:** `cargo test` creates a throwaway database per test on the local stack's
+Postgres (password from your `.env`) and drops it afterwards. Without the stack running they print
+`skipped: no database`. CI always runs them (`TEST_DATABASE_URL`, `REQUIRE_DB=1`).
+
 ## Account recovery (forgot password)
 Kratos's recovery flow with a one-time code ([dev/kratos/kratos.yml](dev/kratos/kratos.yml), aret-backend#15):
 
@@ -139,6 +157,7 @@ Rules (all tested end to end):
 | `ARET_HTTP_ADDR` | `127.0.0.1:<service port>` | Listen address (`0.0.0.0:8080` in containers) |
 | `RUST_LOG` | `info` | Log level, e.g. `debug` or `aret_tracks=debug,info` |
 | `ARET_LOG_FORMAT` | text | `json` for structured logs (set in containers) |
+| `DATABASE_URL` | — (required by aret-tracks) | e.g. `postgres://tracks:<TRACKS_DB_PASSWORD>@127.0.0.1:5432/aret` |
 | `ARET_JWKS_PATH` | `dev/secrets/jwks.public.json` | Public keys that verify Kratos session JWTs (services with login) |
 | `ARET_JWT_ISSUER` | `http://127.0.0.1:8080/kratos/` | Expected `iss` of session JWTs: Kratos's public URL |
 

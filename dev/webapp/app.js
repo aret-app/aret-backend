@@ -392,6 +392,33 @@ $("#get-jwt").addEventListener("click", async () => {
   $("#api-result").textContent = "Got a session JWT. Now call the API.";
 });
 
+/** A synthetic 1 km climb near Pania della Croce, starting now; for trying the API. */
+function sampleTrack() {
+  const start = Date.now();
+  const point = (i) => ({
+    lat: 44.0 + i * 0.0009,
+    lon: 10.3,
+    ele: 1000 + i * 2,
+    time: new Date(start + i * 60_000).toISOString(),
+  });
+  return {
+    id: crypto.randomUUID(),
+    title: `Sample hike ${new Date(start).toLocaleTimeString()}`,
+    points: Array.from({ length: 11 }, (_, i) => point(i)),
+  };
+}
+
+$("#save-sample").addEventListener("click", async () => {
+  if (!sessionJwt) {
+    $("#api-result").textContent = "Get a JWT first (step 1).";
+    return;
+  }
+  const result = await call("POST", `${GATEWAY}/api/tracks/v1/tracks`, sampleTrack(), {
+    Authorization: `Bearer ${sessionJwt}`,
+  });
+  $("#api-result").textContent = `HTTP ${result.status}\n${JSON.stringify(result.data, null, 2)}`;
+});
+
 $("#call-tracks").addEventListener("click", async () => {
   const headers = sessionJwt ? { Authorization: `Bearer ${sessionJwt}` } : {};
   const result = await call("GET", `${GATEWAY}/api/tracks/v1/tracks`, undefined, headers);

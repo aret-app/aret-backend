@@ -138,6 +138,8 @@ services:
     pull_policy: build   # built from this repo, never downloaded
     environment:
       RUST_LOG: info
+      # Role `tracks` owns schema `tracks` in database `aret` (dev/postgres/20-aret.sh)
+      DATABASE_URL: postgres://tracks:${TRACKS_DB_PASSWORD}@postgres:5432/aret
       # Verify Kratos session JWTs (crates/aret-auth)
       ARET_JWKS_PATH: /run/aret/jwks.public.json
       ARET_JWT_ISSUER: http://127.0.0.1:8080/kratos/

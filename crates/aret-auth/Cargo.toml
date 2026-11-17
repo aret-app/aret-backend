@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# `aret_auth::testing`: throwaway signing keys for other crates' tests. Never enable in services.
+test-support = ["dep:p256", "dep:base64"]
+
 [dependencies]
 aret-common.workspace = true
 axum.workspace = true
@@ -15,6 +19,8 @@ jsonwebtoken.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+p256 = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true

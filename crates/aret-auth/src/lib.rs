@@ -188,36 +188,37 @@ fn bearer_token(parts: &Parts) -> Option<&str> {
         .filter(|token| !token.is_empty())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use axum::Router;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use axum::routing::get;
-    use jsonwebtoken::{EncodingKey, Header};
+/// Throwaway signing keys for tests in this and other crates (feature `test-support`).
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing {
+    use jsonwebtoken::{Algorithm, EncodingKey, Header};
     use serde_json::{Value, json};
 
-    const ISSUER: &str = "http://127.0.0.1:8080/kratos/";
+    use crate::{AUDIENCE, JwtVerifier};
 
-    /// A throwaway ES256 key pair generated for one test, like `scripts/dev-env.sh` makes.
-    struct TestKeys {
+    /// Issuer of test tokens (the local Kratos public URL).
+    pub const TEST_ISSUER: &str = "http://127.0.0.1:8080/kratos/";
+
+    /// A throwaway ES256 key pair, like the one `scripts/dev-env.sh` makes. Tests only.
+    pub struct TestKeys {
         key_id: String,
         signing: EncodingKey,
         public_jwks: String,
     }
 
     impl TestKeys {
-        fn generate(key_id: &str) -> Self {
+        /// Generates a new key pair whose public key has id `key_id`.
+        pub fn generate(key_id: &str) -> Self {
             use base64::Engine;
             use base64::engine::general_purpose::URL_SAFE_NO_PAD;
             use p256::elliptic_curve::Generate;
             use p256::pkcs8::{EncodePrivateKey, LineEnding};
 
             let secret = p256::SecretKey::try_generate().expect("system random number generator");
-            let pem = secret.to_pkcs8_pem(LineEnding::LF).unwrap();
-            let signing = EncodingKey::from_ec_pem(pem.as_bytes()).unwrap();
+            let pem = secret
+                .to_pkcs8_pem(LineEnding::LF)
+                .expect("PKCS#8 encoding");
+            let signing = EncodingKey::from_ec_pem(pem.as_bytes()).expect("valid EC key");
 
             // Uncompressed SEC1 point: 0x04 || x (32 bytes) || y (32 bytes)
             let point = secret.public_key().to_sec1_bytes();
@@ -239,23 +240,30 @@ mod tests {
             }
         }
 
-        fn sign(&self, claims: &Value) -> String {
+        /// Signs `claims` the way Kratos's tokenizer does (ES256 with `kid`).
+        pub fn sign(&self, claims: &Value) -> String {
             let mut header = Header::new(Algorithm::ES256);
             header.kid = Some(self.key_id.clone());
-            jsonwebtoken::encode(&header, claims, &self.signing).unwrap()
+            jsonwebtoken::encode(&header, claims, &self.signing).expect("signing a test token")
         }
 
-        fn verifier(&self) -> JwtVerifier {
-            JwtVerifier::try_new(&self.public_jwks, ISSUER).unwrap()
+        /// A verifier that trusts this key pair and [`TEST_ISSUER`].
+        pub fn verifier(&self) -> JwtVerifier {
+            JwtVerifier::try_new(&self.public_jwks, TEST_ISSUER).expect("valid test key set")
+        }
+
+        /// A valid session JWT for `subject`, as Kratos would issue it.
+        pub fn token_for(&self, subject: &str) -> String {
+            self.sign(&kratos_claims(subject))
         }
     }
 
-    /// Claims as Kratos issues them, valid for one minute from now.
-    fn kratos_claims() -> Value {
+    /// Claims as Kratos issues them for `subject`, valid for one minute from now.
+    pub fn kratos_claims(subject: &str) -> Value {
         let now = jsonwebtoken::get_current_timestamp();
         json!({
-            "sub": "4c3b9a1e-identity-id",
-            "iss": ISSUER,
+            "sub": subject,
+            "iss": TEST_ISSUER,
             "aud": AUDIENCE,
             "iat": now,
             "nbf": now,
@@ -264,13 +272,28 @@ mod tests {
             "sid": "session-id",
         })
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use serde_json::json;
+
+    use crate::testing::{TEST_ISSUER, TestKeys, kratos_claims};
+
+    const SUBJECT: &str = "4c3b9a1e-identity-id";
 
     #[test]
     fn accepts_a_valid_kratos_token() {
         let keys = TestKeys::generate("dev-1");
         let user = keys
             .verifier()
-            .verify(&keys.sign(&kratos_claims()))
+            .verify(&keys.sign(&kratos_claims(SUBJECT)))
             .unwrap();
         assert_eq!(
             user,
@@ -283,7 +306,7 @@ mod tests {
     #[test]
     fn rejects_an_expired_token() {
         let keys = TestKeys::generate("dev-1");
-        let mut claims = kratos_claims();
+        let mut claims = kratos_claims(SUBJECT);
         claims["exp"] = json!(jsonwebtoken::get_current_timestamp() - 120);
         let err = keys.verifier().verify(&keys.sign(&claims)).unwrap_err();
         assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
@@ -292,7 +315,7 @@ mod tests {
     #[test]
     fn rejects_another_issuer() {
         let keys = TestKeys::generate("dev-1");
-        let mut claims = kratos_claims();
+        let mut claims = kratos_claims(SUBJECT);
         claims["iss"] = json!("https://evil.example/");
         assert!(keys.verifier().verify(&keys.sign(&claims)).is_err());
     }
@@ -300,7 +323,7 @@ mod tests {
     #[test]
     fn rejects_another_audience() {
         let keys = TestKeys::generate("dev-1");
-        let mut claims = kratos_claims();
+        let mut claims = kratos_claims(SUBJECT);
         claims["aud"] = json!("some-other-api");
         assert!(keys.verifier().verify(&keys.sign(&claims)).is_err());
     }
@@ -309,7 +332,7 @@ mod tests {
     fn rejects_a_token_signed_with_another_key() {
         let trusted = TestKeys::generate("dev-1");
         let attacker = TestKeys::generate("dev-1"); // same kid, different key
-        let token = attacker.sign(&kratos_claims());
+        let token = attacker.sign(&kratos_claims(SUBJECT));
         assert!(trusted.verifier().verify(&token).is_err());
     }
 
@@ -321,9 +344,9 @@ mod tests {
 
     #[test]
     fn config_rejects_a_key_set_without_usable_keys() {
-        let result = JwtVerifier::try_new(r#"{"keys":[]}"#, ISSUER);
+        let result = JwtVerifier::try_new(r#"{"keys":[]}"#, TEST_ISSUER);
         assert!(matches!(result, Err(AuthConfigError::NoUsableKey)));
-        let result = JwtVerifier::try_new("not json", ISSUER);
+        let result = JwtVerifier::try_new("not json", TEST_ISSUER);
         assert!(matches!(result, Err(AuthConfigError::ParseJwks(_))));
     }
 
@@ -355,7 +378,7 @@ mod tests {
     #[tokio::test]
     async fn handler_gets_the_user_from_a_valid_token() {
         let keys = TestKeys::generate("dev-1");
-        let bearer = format!("Bearer {}", keys.sign(&kratos_claims()));
+        let bearer = format!("Bearer {}", keys.sign(&kratos_claims(SUBJECT)));
         let (status, body) = call_me(&keys, Some(&bearer)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, "4c3b9a1e-identity-id");

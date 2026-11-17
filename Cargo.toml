@@ -31,6 +31,13 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
+uuid = { version = "1.29", features = ["serde"] }
+time = { version = "0.3.55", features = ["serde", "formatting", "parsing", "macros"] }
+base64 = "0.23"
+
+# database: PostgreSQL + PostGIS (ADR-0002). Runtime-checked queries (no DATABASE_URL at build time);
+# integration tests cover them. No TLS: the database is on the private Compose/cluster network.
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-none", "postgres", "uuid", "time", "migrate", "macros"] }
 
 # auth: verify Kratos session JWTs (ES256). `rust_crypto` = pure-Rust crypto, no C toolchain needed
 # for the static musl images.
@@ -41,7 +48,8 @@ tower = { version = "0.5", features = ["util"] }
 # tests only: generate throwaway ES256 keys at test time (never commit private keys).
 # Same p256 major as jsonwebtoken; 0.13 pulls crypto-bigint 0.5 (RUSTSEC-2026-0387).
 p256 = { version = "0.14", features = ["getrandom", "pem", "pkcs8"] }
-base64 = "0.23"
+# tests only: read the local .env (database password) in integration tests
+dotenvy = "0.15"
 
 # Lint rules every crate inherits with `[lints] workspace = true`.
 # Code follows the Google Rust style guide: https://google.github.io/styleguide/rustguide.html
