@@ -184,3 +184,41 @@ const map = new MapLibreMap({
 });
 map.addControl(new NavigationControl(), "top-right");
 map.addControl(new ScaleControl({ unit: "metric" }), "bottom-left");
+
+const mapReady = new Promise((resolve) => map.once("load", resolve));
+
+/** Draws one track (points with lat/lon) on top of the map and zooms to it. */
+export async function showTrack(points) {
+  await mapReady;
+  const line = {
+    type: "Feature",
+    properties: {},
+    geometry: { type: "LineString", coordinates: points.map((p) => [p.lon, p.lat]) },
+  };
+  const source = map.getSource("selected-track");
+  if (source) {
+    source.setData(line);
+  } else {
+    map.addSource("selected-track", { type: "geojson", data: line });
+    map.addLayer({
+      id: "selected-track-casing",
+      type: "line",
+      source: "selected-track",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#ffffff", "line-width": 7 },
+    });
+    map.addLayer({
+      id: "selected-track",
+      type: "line",
+      source: "selected-track",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#ff5717", "line-width": 4 },
+    });
+  }
+  const lons = points.map((p) => p.lon);
+  const lats = points.map((p) => p.lat);
+  map.fitBounds(
+    [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]],
+    { padding: 60, maxZoom: 15, duration: 800 },
+  );
+}

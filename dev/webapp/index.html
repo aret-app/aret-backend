@@ -114,6 +114,28 @@
       <pre id="api-result" class="mono"></pre>
     </section>
 
+    <section class="card" id="tracks-card">
+      <div class="card-head">
+        <h2>My tracks <small>GPX in and out</small></h2>
+        <button id="tracks-refresh" class="ghost">Refresh</button>
+      </div>
+      <form id="gpx-form" class="row">
+        <input type="file" id="gpx-file" accept=".gpx,application/gpx+xml" required>
+        <button type="submit">Upload GPX</button>
+      </form>
+      <p class="hint">Try the synthetic <code>services/tracks/tests/fixtures/sample.gpx</code>.
+        Click a track to draw it on the map.</p>
+      <table class="tracks">
+        <thead><tr><th>Track</th><th>Date</th><th>km</th><th>↑ m</th></tr></thead>
+        <tbody id="tracks-body"></tbody>
+      </table>
+      <div class="row" id="track-actions" hidden>
+        <span id="track-selected" class="hint"></span>
+        <button id="track-download" class="ghost">Download GPX</button>
+      </div>
+      <p id="tracks-message" class="message" role="status"></p>
+    </section>
+
     <section class="card map-card">
       <div class="card-head">
         <h2>Map <small>pilot tiles from aret-tiles.pages.dev</small></h2>

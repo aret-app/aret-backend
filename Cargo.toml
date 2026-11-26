@@ -34,6 +34,9 @@ thiserror = "2.0"
 uuid = { version = "1.29", features = ["serde"] }
 time = { version = "0.3.55", features = ["serde", "formatting", "parsing", "macros"] }
 base64 = "0.23"
+# GPX 1.0/1.1 reading and writing (georust)
+gpx = "0.10"
+geo-types = "0.7"   # points for writing GPX
 
 # database: PostgreSQL + PostGIS (ADR-0002). Runtime-checked queries (no DATABASE_URL at build time);
 # integration tests cover them. No TLS: the database is on the private Compose/cluster network.

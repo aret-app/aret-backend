@@ -23,6 +23,8 @@
 		Access-Control-Allow-Credentials "true"
 		Access-Control-Allow-Headers "Accept, Content-Type, Authorization"
 		Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+		# Let the page read the download's file name (GPX export)
+		Access-Control-Expose-Headers "Content-Disposition"
 		Vary Origin
 	}
 	# Browsers ask permission first ("preflight") for JSON POSTs; answer it here

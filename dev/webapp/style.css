@@ -116,6 +116,14 @@ pre:empty { display: none; }
 
 #map { height: 520px; border-radius: 8px; overflow: hidden; }
 
+.tracks { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13.5px; }
+.tracks th { color: var(--muted); font-weight: 400; text-align: left; padding: 4px 6px; }
+.tracks td { padding: 6px; border-top: 1px solid var(--line); }
+.tracks td:nth-child(n+3), .tracks th:nth-child(n+3) { text-align: right; font-variant-numeric: tabular-nums; }
+.tracks tbody tr { cursor: pointer; }
+.tracks tbody tr:hover, .tracks tbody tr.selected { background: rgba(255, 87, 23, 0.12); }
+input[type="file"] { flex: 1; min-width: 0; }
+
 .log { margin: 0; padding-left: 28px; max-height: 220px; overflow: auto; color: var(--muted); }
 .log .ok { color: var(--ok); }
 .log .bad { color: var(--bad); }

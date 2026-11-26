@@ -76,6 +76,46 @@ impl TestApi {
     }
 }
 
+impl TestApi {
+    /// Sends a raw body (e.g. a GPX file) as `user`; returns status, content type and body bytes.
+    async fn send_raw(
+        &self,
+        user: Uuid,
+        method: &str,
+        uri: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, String, Vec<u8>) {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(
+                AUTHORIZATION,
+                format!("Bearer {}", self.keys.token_for(&user.to_string())),
+            )
+            .header(CONTENT_TYPE, "application/gpx+xml")
+            .body(Body::from(body))
+            .expect("a valid request");
+        let response = self
+            .router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("router never fails");
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .map(|value| value.to_str().expect("ASCII header").to_owned())
+            .unwrap_or_default();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("readable body");
+        (status, content_type, bytes.to_vec())
+    }
+}
+
+const SAMPLE_GPX: &[u8] = include_bytes!("fixtures/sample.gpx");
+
 /// A short climb near Pania della Croce: 3 points, 0.009° north (~1 km), +20 m, 10 minutes.
 fn hike(id: Uuid, start_minute: u32) -> Value {
     let at = |minute: u32| format!("2026-08-01T08:{:02}:00Z", start_minute + minute);
@@ -240,5 +280,99 @@ async fn rejects_invalid_requests() {
         .send(Some(user), "GET", "/v1/tracks?cursor=garbage", None)
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    db.drop_database().await;
+}
+
+#[tokio::test]
+async fn imports_a_gpx_file_idempotently() {
+    let Some(db) = TestDb::try_create().await else {
+        return;
+    };
+    let api = TestApi::new(&db);
+    let (user, id) = (Uuid::new_v4(), Uuid::new_v4());
+    let uri = format!("/v1/tracks/gpx?id={id}");
+
+    let (status, _, body) = api.send_raw(user, "POST", &uri, SAMPLE_GPX.to_vec()).await;
+    let track: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{track}");
+    assert_eq!(track["title"], "Sample climb to the ridge");
+    assert_eq!(track["point_count"], 6);
+    assert_eq!(
+        track["ascent_m"], 60.0,
+        "1100 → 1160 m, the gap at 1124 interpolated"
+    );
+    let distance = track["distance_m"].as_f64().unwrap();
+    assert!(
+        (495.0..505.0).contains(&distance),
+        "5 steps of 0.0009° ≈ 500 m, got {distance}"
+    );
+
+    let (retry, _, _) = api.send_raw(user, "POST", &uri, SAMPLE_GPX.to_vec()).await;
+    assert_eq!(retry, StatusCode::OK, "same id again: no duplicate");
+    db.drop_database().await;
+}
+
+#[tokio::test]
+async fn exports_a_track_as_gpx() {
+    let Some(db) = TestDb::try_create().await else {
+        return;
+    };
+    let api = TestApi::new(&db);
+    let (user, id) = (Uuid::new_v4(), Uuid::new_v4());
+    let uri = format!("/v1/tracks/gpx?id={id}&title=Renamed");
+    api.send_raw(user, "POST", &uri, SAMPLE_GPX.to_vec()).await;
+
+    let (status, content_type, gpx) = api
+        .send_raw(user, "GET", &format!("/v1/tracks/{id}/gpx"), Vec::new())
+        .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type, "application/gpx+xml");
+    let reimported = aret_tracks::gpx_format::parse_track(&gpx).unwrap();
+    assert_eq!(
+        reimported.title, "Renamed",
+        "?title= overrides the file's name"
+    );
+    assert_eq!(reimported.points.len(), 6);
+    let (status, _, _) = api
+        .send_raw(
+            Uuid::new_v4(),
+            "GET",
+            &format!("/v1/tracks/{id}/gpx"),
+            Vec::new(),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "other users can't download it"
+    );
+    db.drop_database().await;
+}
+
+#[tokio::test]
+async fn rejects_broken_gpx_uploads() {
+    let Some(db) = TestDb::try_create().await else {
+        return;
+    };
+    let api = TestApi::new(&db);
+    let user = Uuid::new_v4();
+    let uri = format!("/v1/tracks/gpx?id={}", Uuid::new_v4());
+
+    let (status, _, body) = api
+        .send_raw(user, "POST", &uri, b"<html>no</html>".to_vec())
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let problem: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(problem["detail"], "not a valid GPX file");
+
+    let (status, _, _) = api
+        .send_raw(user, "POST", "/v1/tracks/gpx", SAMPLE_GPX.to_vec())
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "the id query parameter is required"
+    );
     db.drop_database().await;
 }

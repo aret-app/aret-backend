@@ -88,6 +88,8 @@ edit a file and reload the page.
   (Kratos *browser* flows: cookies + CSRF, like a real web app; the iOS app uses the API flows)
 - **tracks API:** *Get JWT* (Kratos `whoami?tokenize_as=aret`), then `GET /v1/tracks` with it → 200;
   without a JWT → 401
+- **My tracks:** upload a GPX (try the synthetic `services/tracks/tests/fixtures/sample.gpx`), list your
+  tracks, click one to draw it on the map, download it as GPX
 - **Map:** the pilot tiles from `aret-tiles.pages.dev` with a first outdoor style (MapLibre GL JS 6)
 - **Requests:** every call the page makes, with its status
 
@@ -122,6 +124,8 @@ Every route needs a session JWT (see *Login check*). JSON, errors as problem+jso
 | `POST /v1/tracks` | Save a track: `{ id, title?, points: [{ lat, lon, ele, time }] }`. The **client generates `id`** (UUID v7): retrying the same upload returns **200** with the stored track instead of a duplicate; another user's id → 409. New → **201**. |
 | `GET /v1/tracks?limit=&cursor=` | My tracks, newest first (20 per page, max 100); `next_cursor` until the last page |
 | `GET /v1/tracks/{id}` | One track with all points; other users' tracks → 404 |
+| `POST /v1/tracks/gpx?id=&title=` | Import a **GPX** file (body, `application/gpx+xml`): first `<trk>`, all segments joined; same rules and answers as `POST /v1/tracks`. Missing elevations are interpolated; points without time are rejected (a planned route, not a recording). |
+| `GET /v1/tracks/{id}/gpx` | Export as **GPX 1.1** download (`aret-<date>-<id>.gpx`) |
 
 The server computes **distance** (PostGIS, on the WGS 84 ellipsoid) and **ascent/descent** (changes under
 3 m are noise). Points are stored as one PostGIS `LineStringZM` (lon, lat, elevation, time as M) in table
@@ -130,7 +134,7 @@ Limits: 2–100,000 points, time never going backwards, title ≤ 200 characters
 
 **Tests against a real database:** `cargo test` creates a throwaway database per test on the local stack's
 Postgres (password from your `.env`) and drops it afterwards. Without the stack running they print
-`skipped: no database`. CI always runs them (`TEST_DATABASE_URL`, `REQUIRE_DB=1`).
+`skipped: …` and pass. CI always runs them (`TEST_DATABASE_URL`, `REQUIRE_DB=1`).
 
 ## Account recovery (forgot password)
 Kratos's recovery flow with a one-time code ([dev/kratos/kratos.yml](dev/kratos/kratos.yml), aret-backend#15):

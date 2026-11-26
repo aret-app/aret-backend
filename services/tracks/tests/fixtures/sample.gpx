@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SYNTHETIC sample for tests and the test console (aret-backend#17): a made-up short climb near
+     Pania della Croce, Alpi Apuane. Two segments (a pause), one point without elevation.
+     Not a real recording: never commit real personal tracks. -->
+<gpx version="1.1" creator="Aret test fixture" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>Synthetic sample</name>
+  </metadata>
+  <trk>
+    <name>Sample climb to the ridge</name>
+    <trkseg>
+      <trkpt lat="44.0300000" lon="10.3200000"><ele>1100.0</ele><time>2026-08-02T07:00:00Z</time></trkpt>
+      <trkpt lat="44.0309000" lon="10.3200000"><ele>1112.0</ele><time>2026-08-02T07:02:00Z</time></trkpt>
+      <trkpt lat="44.0318000" lon="10.3200000"><time>2026-08-02T07:04:00Z</time></trkpt>
+      <trkpt lat="44.0327000" lon="10.3200000"><ele>1136.0</ele><time>2026-08-02T07:06:00Z</time></trkpt>
+    </trkseg>
+    <trkseg>
+      <trkpt lat="44.0336000" lon="10.3200000"><ele>1148.0</ele><time>2026-08-02T07:20:00Z</time></trkpt>
+      <trkpt lat="44.0345000" lon="10.3200000"><ele>1160.0</ele><time>2026-08-02T07:22:00Z</time></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

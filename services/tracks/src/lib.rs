@@ -4,11 +4,14 @@
 //! - `POST /v1/tracks`: save a track; idempotent on its client-generated id
 //! - `GET /v1/tracks`: the user's tracks, newest first, with cursor pagination
 //! - `GET /v1/tracks/{id}`: one track with all its points
+//! - `POST /v1/tracks/gpx?id=`: import a GPX file (same rules as `POST /v1/tracks`)
+//! - `GET /v1/tracks/{id}/gpx`: export a track as GPX 1.1
 //!
-//! Modules: [`model`] (API types and validation), [`stats`] (elevation gain), [`store`] (SQL),
+//! Modules: [`model`] (API types and validation), [`gpx_format`] (GPX import/export), [`stats`] (elevation gain), [`store`] (SQL),
 //! [`routes`] (handlers), [`db`] (pool and migrations).
 
 pub mod db;
+pub mod gpx_format;
 pub mod model;
 pub mod routes;
 pub mod stats;
@@ -19,7 +22,7 @@ use std::sync::Arc;
 use aret_auth::JwtVerifier;
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, FromRef};
-use axum::routing::get;
+use axum::routing::{get, post};
 use sqlx::PgPool;
 
 /// Largest accepted request body: room for a long hike recorded every second.
@@ -53,7 +56,9 @@ pub fn router(state: AppState) -> Router {
             "/v1/tracks",
             get(routes::list_tracks).post(routes::create_track),
         )
+        .route("/v1/tracks/gpx", post(routes::import_gpx))
         .route("/v1/tracks/{id}", get(routes::get_track))
+        .route("/v1/tracks/{id}/gpx", get(routes::export_gpx))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }

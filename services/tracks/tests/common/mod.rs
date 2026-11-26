@@ -20,14 +20,23 @@ pub struct TestDb {
 }
 
 impl TestDb {
-    /// Creates a fresh database, or `None` (test skipped) when no database server is configured.
+    /// Creates a fresh database, or `None` (test skipped) when no database server is configured
+    /// or reachable (e.g. the Compose stack is stopped). With `REQUIRE_DB` set, both are errors.
     pub async fn try_create() -> Option<Self> {
         let server_url = server_url()?;
         let name = format!("aret_test_{}", Uuid::new_v4().simple());
 
-        let mut admin = PgConnection::connect(&server_url)
-            .await
-            .expect("connect to test server");
+        let mut admin = match PgConnection::connect(&server_url).await {
+            Ok(connection) => connection,
+            Err(error) => {
+                assert!(
+                    std::env::var("REQUIRE_DB").is_err(),
+                    "REQUIRE_DB is set but the test database is unreachable: {error}"
+                );
+                eprintln!("skipped: test database unreachable ({error}); is the stack running?");
+                return None;
+            }
+        };
         // The name comes from a random UUID only, never from input
         sqlx::raw_sql(AssertSqlSafe(format!("CREATE DATABASE {name}")))
             .execute(&mut admin)

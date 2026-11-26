@@ -1,4 +1,6 @@
 // Aret test console: service status, Kratos accounts (browser flows) and API calls.
+import { showTrack } from "./map.js";
+
 // Everything goes through the gateway (dev/gateway/Caddyfile):
 //   /kratos/*  → Ory Kratos public API      /api/<service>/*  → our Rust services
 //
@@ -18,17 +20,21 @@ let sessionJwt = null;
 
 // ---------------------------------------------------------------- HTTP + request log
 
-/** Calls the backend with cookies and JSON, logs it, and never throws on HTTP errors. */
+/**
+ * Calls the backend with cookies, logs it, and never throws on HTTP errors. Objects are sent as
+ * JSON; a string body (e.g. a GPX file) is sent as-is with the Content-Type from `extraHeaders`.
+ */
 async function call(method, url, body, extraHeaders = {}) {
   const headers = { Accept: "application/json", ...extraHeaders };
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const raw = typeof body === "string";
+  if (body !== undefined && !raw) headers["Content-Type"] = "application/json";
   let response;
   try {
     response = await fetch(url, {
       method,
       headers,
       credentials: "include",
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
     });
   } catch (error) {
     logRequest(method, url, "network error");
@@ -133,6 +139,7 @@ async function refreshSession() {
   $("#session-id").textContent = identity.id;
   $("#session-expires").textContent = new Date(result.data.expires_at).toLocaleString();
   $("#verify-form").hidden = Boolean(address?.verified);
+  await loadTracks();
 }
 
 // ---------------------------------------------------------------- sign up / log in
@@ -425,6 +432,118 @@ $("#call-tracks").addEventListener("click", async () => {
   const sent = sessionJwt ? "with JWT" : "without JWT";
   $("#api-result").textContent =
     `HTTP ${result.status} (${sent})\n${JSON.stringify(result.data, null, 2)}`;
+});
+
+// ---------------------------------------------------------------- my tracks (GPX)
+
+const TRACKS_API = `${GATEWAY}/api/tracks/v1/tracks`;
+let selectedTrackId = null;
+
+/** A session JWT valid for at least 30 more seconds, fetched from Kratos if needed. */
+async function ensureJwt() {
+  const expiresSoon = sessionJwt && jwtClaims(sessionJwt).exp * 1000 < Date.now() + 30_000;
+  if (!sessionJwt || expiresSoon) {
+    const result = await call("GET", `${KRATOS}/sessions/whoami?tokenize_as=aret`);
+    setJwt(result.ok ? result.data?.tokenized ?? null : null);
+  }
+  return sessionJwt;
+}
+
+function tracksMessage(text, kind = "") {
+  $("#tracks-message").textContent = text;
+  $("#tracks-message").className = `message ${kind}`;
+}
+
+async function loadTracks() {
+  const jwt = await ensureJwt();
+  if (!jwt) return tracksMessage("Log in to see your tracks.", "bad");
+  const result = await call("GET", `${TRACKS_API}?limit=50`, undefined, {
+    Authorization: `Bearer ${jwt}`,
+  });
+  if (!result.ok) return tracksMessage(kratosMessages(result.data), "bad");
+
+  const body = $("#tracks-body");
+  body.textContent = "";
+  for (const track of result.data.items) {
+    const row = document.createElement("tr");
+    row.dataset.id = track.id;
+    row.classList.toggle("selected", track.id === selectedTrackId);
+    const cells = [
+      track.title || "(untitled)",
+      new Date(track.started_at).toLocaleDateString(),
+      (track.distance_m / 1000).toFixed(2),
+      Math.round(track.ascent_m),
+    ];
+    for (const value of cells) {
+      const cell = document.createElement("td");
+      cell.textContent = value; // textContent: titles are user input, never HTML
+      row.append(cell);
+    }
+    row.addEventListener("click", () => selectTrack(track));
+    body.append(row);
+  }
+  tracksMessage(result.data.items.length ? "" : "No tracks yet. Upload a GPX file.");
+}
+
+async function selectTrack(track) {
+  const jwt = await ensureJwt();
+  if (!jwt) return tracksMessage("Log in first.", "bad");
+  const result = await call("GET", `${TRACKS_API}/${track.id}`, undefined, {
+    Authorization: `Bearer ${jwt}`,
+  });
+  if (!result.ok) return tracksMessage(kratosMessages(result.data), "bad");
+
+  selectedTrackId = track.id;
+  document.querySelectorAll("#tracks-body tr").forEach((row) => {
+    row.classList.toggle("selected", row.dataset.id === track.id);
+  });
+  $("#track-actions").hidden = false;
+  $("#track-selected").textContent =
+    `${track.title || "(untitled)"} · ${result.data.points.length} points`;
+  await showTrack(result.data.points);
+  $("#map").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+$("#tracks-refresh").addEventListener("click", loadTracks);
+
+$("#gpx-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  busy(form, async () => {
+    const file = $("#gpx-file").files[0];
+    if (!file) return tracksMessage("Choose a .gpx file first.", "bad");
+    const jwt = await ensureJwt();
+    if (!jwt) return tracksMessage("Log in first.", "bad");
+
+    // A new id per upload; the app would keep it so a retried upload never duplicates
+    const result = await call("POST", `${TRACKS_API}/gpx?id=${crypto.randomUUID()}`,
+      await file.text(), {
+        Authorization: `Bearer ${jwt}`,
+        "Content-Type": "application/gpx+xml",
+      });
+    if (!result.ok) return tracksMessage(kratosMessages(result.data), "bad");
+
+    form.reset();
+    tracksMessage(`Imported "${result.data.title || "(untitled)"}".`, "ok");
+    await loadTracks();
+    await selectTrack(result.data);
+  });
+});
+
+$("#track-download").addEventListener("click", async () => {
+  const jwt = await ensureJwt();
+  if (!jwt || !selectedTrackId) return;
+  const url = `${TRACKS_API}/${selectedTrackId}/gpx`;
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${jwt}` } });
+  logRequest("GET", url, response.status);
+  if (!response.ok) return tracksMessage(`Download failed (${response.status}).`, "bad");
+
+  const name = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(await response.blob());
+  link.download = name?.[1] ?? `aret-${selectedTrackId}.gpx`;
+  link.click();
+  URL.revokeObjectURL(link.href);
 });
 
 // ---------------------------------------------------------------- start
