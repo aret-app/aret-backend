@@ -4,16 +4,19 @@
 use aret_auth::AuthenticatedUser;
 use aret_common::error::ApiError;
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::response::IntoResponse;
 use serde::Deserialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::model::{NewTrack, PageCursor, TrackDetail, TrackPage, TrackSummary, ValidTrack};
-use crate::stats;
 use crate::store::{self, SaveOutcome};
+use crate::{gpx_format, stats};
 
 /// Page size when the client doesn't ask for one.
 const DEFAULT_PAGE_SIZE: u32 = 20;
@@ -30,10 +33,73 @@ pub async fn create_track(
     let owner = owner_id(&user)?;
     let Json(new_track) =
         body.map_err(|rejection| ApiError::bad_request(&rejection.body_text()))?;
+    save(&pool, owner, new_track).await
+}
+
+/// Query string of `POST /v1/tracks/gpx`.
+#[derive(Debug, Deserialize)]
+pub struct GpxUploadQuery {
+    /// Client-generated track id (UUID v7), as for `POST /v1/tracks`: makes uploads idempotent.
+    pub id: Uuid,
+    /// Overrides the track name from the file.
+    pub title: Option<String>,
+}
+
+/// `POST /v1/tracks/gpx?id=&title=` with a GPX file as the body: same rules and answers as
+/// `POST /v1/tracks`.
+pub async fn import_gpx(
+    State(pool): State<PgPool>,
+    user: AuthenticatedUser,
+    query: Result<Query<GpxUploadQuery>, QueryRejection>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<TrackSummary>), ApiError> {
+    let owner = owner_id(&user)?;
+    let Query(query) = query.map_err(|rejection| ApiError::bad_request(&rejection.body_text()))?;
+    let imported = gpx_format::parse_track(&body)?;
+    let new_track = NewTrack {
+        id: query.id,
+        title: query.title.unwrap_or(imported.title),
+        points: imported.points,
+    };
+    save(&pool, owner, new_track).await
+}
+
+/// `GET /v1/tracks/{id}/gpx`: one of the user's tracks as a GPX 1.1 download.
+pub async fn export_gpx(
+    State(pool): State<PgPool>,
+    user: AuthenticatedUser,
+    id: Result<Path<Uuid>, PathRejection>,
+) -> Result<impl IntoResponse, ApiError> {
+    let Json(track) = get_track(State(pool), user, id).await?;
+    let bytes: Vec<u8> = gpx_format::write_track(&track).map_err(|error| {
+        tracing::error!(%error, "GPX export failed");
+        ApiError::internal()
+    })?;
+    // The file name uses only the date and id: no user text in a response header
+    let date = track.summary.started_at.date();
+    let disposition = format!(
+        "attachment; filename=\"aret-{date}-{}.gpx\"",
+        track.summary.id
+    );
+    Ok((
+        [
+            (CONTENT_TYPE, "application/gpx+xml".to_owned()),
+            (CONTENT_DISPOSITION, disposition),
+        ],
+        bytes,
+    ))
+}
+
+/// Validates and stores a track; 201 new, 200 already saved by this user, 409 id taken.
+async fn save(
+    pool: &PgPool,
+    owner: Uuid,
+    new_track: NewTrack,
+) -> Result<(StatusCode, Json<TrackSummary>), ApiError> {
     let track = ValidTrack::try_from(new_track)?;
     let gain = stats::elevation_gain(&track.points);
 
-    match store::save_track(&pool, owner, &track, gain)
+    match store::save_track(pool, owner, &track, gain)
         .await
         .map_err(database_error)?
     {
