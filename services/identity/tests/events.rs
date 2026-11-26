@@ -1,7 +1,8 @@
 //! user.created end to end, minus the real Kratos and NATS: web hook → users + outbox → relay,
 //! and the catch-up loop against a fake Kratos admin API. Real PostgreSQL (`aret-testing`).
 
-use std::sync::Mutex;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 use aret_events::outbox::{self, PublishError, Publisher};
 use aret_events::{Envelope, Event};
@@ -79,6 +80,8 @@ impl Publisher for FakePublisher {
             return Err(PublishError("broker down".to_owned()));
         }
         let payload: serde_json::Value = serde_json::from_slice(&payload).expect("JSON payload");
+        // Give other tasks a chance to run mid-publish, like a real network call would
+        tokio::task::yield_now().await;
         self.published.lock().expect("not poisoned").push((
             subject.to_owned(),
             message_id,
@@ -284,5 +287,96 @@ async fn catch_up_finds_accounts_the_hook_missed() {
             .is_empty()
     );
     assert_eq!(outbox_rows(&db.pool).await.len(), 3);
+    db.drop_database().await;
+}
+
+/// The web hook and catch-up loops (from several identity-svc replicas) all record the same new
+/// account at the same moment: it is announced exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_hook_and_catch_up_announce_once() {
+    let Some(db) = TestDb::try_create(&aret_identity::db::MIGRATOR).await else {
+        return;
+    };
+    let router = app(&db.pool);
+    let user_id = Uuid::new_v4();
+    let others: Vec<Uuid> = (0..5).map(|_| Uuid::new_v4()).collect();
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for round in 0..20 {
+        if round % 2 == 0 {
+            // web hook calls (Kratos retrying, or several Kratos replicas)
+            let router = router.clone();
+            let body = json!({ "identity_id": user_id }).to_string();
+            tasks.spawn(async move {
+                assert_eq!(
+                    registration_hook(&router, Some(SECRET), &body).await,
+                    StatusCode::NO_CONTENT
+                );
+            });
+        } else {
+            // catch-up pages that contain the same account among others
+            let pool = db.pool.clone();
+            let mut page = others.clone();
+            page.push(user_id);
+            tasks.spawn(async move {
+                aret_identity::users::record(&pool, &page)
+                    .await
+                    .expect("record page");
+            });
+        }
+    }
+    while let Some(result) = tasks.join_next().await {
+        result.expect("task finished");
+    }
+
+    let announced: Vec<Uuid> = outbox_rows(&db.pool)
+        .await
+        .iter()
+        .map(|(_, payload)| serde_json::from_value(payload["user_id"].clone()).expect("user id"))
+        .collect();
+    assert_eq!(announced.len(), 6, "each account exactly once");
+    let unique: HashSet<Uuid> = announced.into_iter().collect();
+    assert!(unique.contains(&user_id));
+    assert_eq!(unique.len(), 6);
+    db.drop_database().await;
+}
+
+/// Several relays (identity-svc replicas) drain the outbox in parallel: every event is published
+/// exactly once and every row ends up marked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_relays_publish_each_event_once() {
+    let Some(db) = TestDb::try_create(&aret_identity::db::MIGRATOR).await else {
+        return;
+    };
+    let users: Vec<Uuid> = (0..60).map(|_| Uuid::new_v4()).collect();
+    aret_identity::users::record(&db.pool, &users)
+        .await
+        .expect("record users");
+
+    let publisher = Arc::new(FakePublisher::default());
+    let mut relays = tokio::task::JoinSet::new();
+    for _ in 0..4 {
+        let pool = db.pool.clone();
+        let publisher = Arc::clone(&publisher);
+        relays.spawn(async move {
+            // Small batches so the relays overlap many times
+            while outbox::relay_once(&pool, publisher.as_ref(), 3)
+                .await
+                .expect("relay")
+                > 0
+            {}
+        });
+    }
+    while let Some(result) = relays.join_next().await {
+        result.expect("relay finished");
+    }
+
+    assert_eq!(unpublished_count(&db.pool).await, 0);
+    {
+        let published = publisher.published.lock().expect("not poisoned");
+        assert_eq!(published.len(), users.len(), "no event published twice");
+        let message_ids: HashSet<Uuid> = published.iter().map(|(_, id, _)| *id).collect();
+        assert_eq!(message_ids.len(), users.len());
+    }
     db.drop_database().await;
 }
