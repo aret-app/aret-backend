@@ -1,0 +1,17 @@
+[package]
+name = "aret-testing"
+description = "Test support for Aret services: a throwaway PostGIS database per test (tests only)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+dotenvy.workspace = true
+sqlx.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[lints]
+workspace = true

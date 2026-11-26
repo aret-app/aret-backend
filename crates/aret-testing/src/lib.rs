@@ -1,17 +1,19 @@
-//! Integration-test support: a fresh PostGIS database per test.
+//! Test support for Aret services: a fresh PostgreSQL + PostGIS database per test. Use only as a
+//! dev-dependency.
 //!
 //! Database server, in order of preference:
 //! 1. `TEST_DATABASE_URL` (CI sets it, pointing at a PostGIS service container)
 //! 2. the local Compose stack: `postgres://postgres:$POSTGRES_PASSWORD@127.0.0.1:5432/postgres`,
-//!    with the password read from the repo's private `.env`
+//!    with the password read from the repository's private `.env`
 //!
-//! Without either, DB tests print "skipped" and pass, unless `REQUIRE_DB` is set (CI), which makes
-//! a missing database an error.
+//! Without either, or when the server is unreachable, DB tests print "skipped" and pass, unless
+//! `REQUIRE_DB` is set (CI), which makes both an error.
 
+use sqlx::migrate::Migrator;
 use sqlx::{AssertSqlSafe, Connection, PgConnection, PgPool};
 use uuid::Uuid;
 
-/// A throwaway database with PostGIS and the tracks migrations applied.
+/// A throwaway database with PostGIS and a service's migrations applied.
 pub struct TestDb {
     /// Pool connected to the throwaway database.
     pub pool: PgPool,
@@ -20,9 +22,9 @@ pub struct TestDb {
 }
 
 impl TestDb {
-    /// Creates a fresh database, or `None` (test skipped) when no database server is configured
-    /// or reachable (e.g. the Compose stack is stopped). With `REQUIRE_DB` set, both are errors.
-    pub async fn try_create() -> Option<Self> {
+    /// Creates a fresh database and applies `migrator`, or returns `None` (test skipped) when no
+    /// database server is configured or reachable.
+    pub async fn try_create(migrator: &Migrator) -> Option<Self> {
         let server_url = server_url()?;
         let name = format!("aret_test_{}", Uuid::new_v4().simple());
 
@@ -46,14 +48,12 @@ impl TestDb {
 
         let pool = PgPool::connect(&database_url(&server_url, &name))
             .await
-            .expect("connect");
+            .expect("connect to the test database");
         sqlx::raw_sql("CREATE EXTENSION IF NOT EXISTS postgis")
             .execute(&pool)
             .await
             .expect("enable PostGIS");
-        aret_tracks::db::migrate(&pool)
-            .await
-            .expect("run migrations");
+        migrator.run(&pool).await.expect("run migrations");
         Some(Self {
             pool,
             server_url,
@@ -66,7 +66,7 @@ impl TestDb {
         self.pool.close().await;
         let mut admin = PgConnection::connect(&self.server_url)
             .await
-            .expect("connect");
+            .expect("connect to the test server");
         sqlx::raw_sql(AssertSqlSafe(format!(
             "DROP DATABASE {} WITH (FORCE)",
             self.name

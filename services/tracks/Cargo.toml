@@ -26,7 +26,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 aret-auth = { workspace = true, features = ["test-support"] }
-dotenvy.workspace = true
+aret-testing.workspace = true
 tower.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 

@@ -1,6 +1,4 @@
-//! Tracks API against a real PostGIS database (see `common`).
-
-mod common;
+//! Tracks API against a real PostGIS database (`aret-testing`).
 
 use std::sync::Arc;
 
@@ -14,7 +12,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use common::TestDb;
+use aret_testing::TestDb;
 
 /// The API wired to a test database, with users whose tokens it accepts.
 struct TestApi {
@@ -132,7 +130,7 @@ fn hike(id: Uuid, start_minute: u32) -> Value {
 
 #[tokio::test]
 async fn saves_a_track_with_server_side_stats() {
-    let Some(db) = TestDb::try_create().await else {
+    let Some(db) = TestDb::try_create(&aret_tracks::db::MIGRATOR).await else {
         return;
     };
     let api = TestApi::new(&db);
@@ -158,7 +156,7 @@ async fn saves_a_track_with_server_side_stats() {
 
 #[tokio::test]
 async fn saving_the_same_id_again_is_idempotent() {
-    let Some(db) = TestDb::try_create().await else {
+    let Some(db) = TestDb::try_create(&aret_tracks::db::MIGRATOR).await else {
         return;
     };
     let api = TestApi::new(&db);
@@ -189,7 +187,7 @@ async fn saving_the_same_id_again_is_idempotent() {
 
 #[tokio::test]
 async fn returns_the_points_to_their_owner_only() {
-    let Some(db) = TestDb::try_create().await else {
+    let Some(db) = TestDb::try_create(&aret_tracks::db::MIGRATOR).await else {
         return;
     };
     let api = TestApi::new(&db);
@@ -220,7 +218,7 @@ async fn returns_the_points_to_their_owner_only() {
 
 #[tokio::test]
 async fn lists_newest_first_with_a_cursor() {
-    let Some(db) = TestDb::try_create().await else {
+    let Some(db) = TestDb::try_create(&aret_tracks::db::MIGRATOR).await else {
         return;
     };
     let api = TestApi::new(&db);
@@ -254,7 +252,7 @@ async fn lists_newest_first_with_a_cursor() {
 
 #[tokio::test]
 async fn rejects_invalid_requests() {
-    let Some(db) = TestDb::try_create().await else {
+    let Some(db) = TestDb::try_create(&aret_tracks::db::MIGRATOR).await else {
         return;
     };
     let api = TestApi::new(&db);
@@ -285,7 +283,7 @@ async fn rejects_invalid_requests() {
 
 #[tokio::test]
 async fn imports_a_gpx_file_idempotently() {
-    let Some(db) = TestDb::try_create().await else {
+    let Some(db) = TestDb::try_create(&aret_tracks::db::MIGRATOR).await else {
         return;
     };
     let api = TestApi::new(&db);
@@ -314,7 +312,7 @@ async fn imports_a_gpx_file_idempotently() {
 
 #[tokio::test]
 async fn exports_a_track_as_gpx() {
-    let Some(db) = TestDb::try_create().await else {
+    let Some(db) = TestDb::try_create(&aret_tracks::db::MIGRATOR).await else {
         return;
     };
     let api = TestApi::new(&db);
@@ -352,7 +350,7 @@ async fn exports_a_track_as_gpx() {
 
 #[tokio::test]
 async fn rejects_broken_gpx_uploads() {
-    let Some(db) = TestDb::try_create().await else {
+    let Some(db) = TestDb::try_create(&aret_tracks::db::MIGRATOR).await else {
         return;
     };
     let api = TestApi::new(&db);

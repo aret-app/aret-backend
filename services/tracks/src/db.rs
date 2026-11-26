@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use sqlx::PgPool;
+use sqlx::migrate::Migrator;
 use sqlx::postgres::PgPoolOptions;
 
 /// Environment variable with the connection URL, e.g. `postgres://tracks:…@postgres:5432/aret`.
@@ -17,7 +18,10 @@ pub async fn connect(url: &str) -> Result<PgPool, sqlx::Error> {
         .await
 }
 
-/// Applies pending migrations from `services/tracks/migrations/` (embedded at build time).
+/// Migrations from `services/tracks/migrations/`, embedded at build time.
+pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+
+/// Applies pending migrations.
 pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
-    sqlx::migrate!("./migrations").run(pool).await
+    MIGRATOR.run(pool).await
 }

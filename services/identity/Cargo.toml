@@ -10,7 +10,22 @@ publish.workspace = true
 
 [dependencies]
 aret-common.workspace = true
+aret-events.workspace = true
+axum.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+aret-testing.workspace = true
+tower.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 
 [lints]
 workspace = true

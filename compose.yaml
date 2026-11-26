@@ -23,13 +23,14 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/dev-env.sh}
       POSTGRES_DB: aret
-      # Used by dev/postgres/init/20-aret.sh to create one role per service
+      # Used by dev/postgres/setup.sh to create one role per service
       KRATOS_DB_PASSWORD: ${KRATOS_DB_PASSWORD:?run scripts/dev-env.sh}
       TRACKS_DB_PASSWORD: ${TRACKS_DB_PASSWORD:?run scripts/dev-env.sh}
+      IDENTITY_DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?run scripts/dev-env.sh}
     volumes:
       - postgres-data:/var/lib/postgresql   # Postgres 18 images keep data under this path
-      # Runs once, when the data volume is first created (after PostGIS's own setup script)
-      - ./dev/postgres/20-aret.sh:/docker-entrypoint-initdb.d/20-aret.sh:ro
+      # First start of the volume; afterwards `postgres-setup` re-runs it on every `up`
+      - ./dev/postgres/setup.sh:/docker-entrypoint-initdb.d/20-aret.sh:ro
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
@@ -37,6 +38,25 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  postgres-setup:   # one-shot on every `up`: creates missing roles/schemas (dev/postgres/setup.sh)
+    image: aret-postgres:dev
+    pull_policy: never   # built by the postgres service
+    entrypoint: ["sh", "/setup.sh"]
+    environment:
+      PGHOST: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:?run scripts/dev-env.sh}
+      POSTGRES_USER: postgres
+      POSTGRES_DB: aret
+      KRATOS_DB_PASSWORD: ${KRATOS_DB_PASSWORD:?run scripts/dev-env.sh}
+      TRACKS_DB_PASSWORD: ${TRACKS_DB_PASSWORD:?run scripts/dev-env.sh}
+      IDENTITY_DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?run scripts/dev-env.sh}
+    volumes:
+      - ./dev/postgres/setup.sh:/setup.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   valkey:   # cache and rate limits only: no persistence
     image: valkey/valkey:9.0-alpine
@@ -87,8 +107,8 @@ services:
     environment:
       DSN: postgres://kratos:${KRATOS_DB_PASSWORD}@postgres:5432/kratos?sslmode=disable
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-setup:
+        condition: service_completed_successfully
     restart: "no"
 
   kratos:
@@ -98,6 +118,9 @@ services:
       DSN: postgres://kratos:${KRATOS_DB_PASSWORD}@postgres:5432/kratos?sslmode=disable
       SECRETS_COOKIE: '["${KRATOS_COOKIE_SECRET:?run scripts/dev-env.sh}"]'
       SECRETS_CIPHER: '["${KRATOS_CIPHER_SECRET:?run scripts/dev-env.sh}"]'
+      # Secret of the identity-svc web hook (first after-registration hook in kratos.yml). Only
+      # this one value can come from the environment: Kratos can't read the hooks list from one.
+      SELFSERVICE_FLOWS_REGISTRATION_AFTER_PASSWORD_HOOKS_0_CONFIG_AUTH_CONFIG_VALUE: ${KRATOS_WEBHOOK_SECRET:?run scripts/dev-env.sh}
     volumes:
       - ./dev/kratos:/etc/config/kratos:ro
       # Private key for session JWTs (scripts/dev-env.sh); never in git
@@ -118,13 +141,24 @@ services:
       context: .
       args:
         SERVICE: aret-identity
+        PROFILE: docker-dev   # quick local builds (Cargo.toml); CI builds `release`
     image: aret-identity:dev
     pull_policy: build   # built from this repo, never downloaded
     environment:
       RUST_LOG: info
+      # Role `identity` owns schema `identity` in database `aret` (dev/postgres/setup.sh)
+      DATABASE_URL: postgres://identity:${IDENTITY_DB_PASSWORD:?run scripts/dev-env.sh}@postgres:5432/aret
+      NATS_URL: nats://nats:4222
+      KRATOS_ADMIN_URL: http://kratos:4434
+      # Kratos sends it with every web hook call (see the kratos service above)
+      ARET_KRATOS_WEBHOOK_SECRET: ${KRATOS_WEBHOOK_SECRET:?run scripts/dev-env.sh}
     ports:
       - "127.0.0.1:8081:8080"
     depends_on:
+      postgres-setup:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
       kratos:
         condition: service_started
     restart: unless-stopped
@@ -134,11 +168,12 @@ services:
       context: .
       args:
         SERVICE: aret-tracks
+        PROFILE: docker-dev   # quick local builds (Cargo.toml); CI builds `release`
     image: aret-tracks:dev
     pull_policy: build   # built from this repo, never downloaded
     environment:
       RUST_LOG: info
-      # Role `tracks` owns schema `tracks` in database `aret` (dev/postgres/20-aret.sh)
+      # Role `tracks` owns schema `tracks` in database `aret` (dev/postgres/setup.sh)
       DATABASE_URL: postgres://tracks:${TRACKS_DB_PASSWORD}@postgres:5432/aret
       # Verify Kratos session JWTs (crates/aret-auth)
       ARET_JWKS_PATH: /run/aret/jwks.public.json
@@ -148,8 +183,8 @@ services:
     ports:
       - "127.0.0.1:8082:8080"
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-setup:
+        condition: service_completed_successfully
       nats:
         condition: service_healthy
     restart: unless-stopped
