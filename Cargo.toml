@@ -17,6 +17,8 @@ publish = false
 # our crates
 aret-common = { path = "crates/aret-common" }
 aret-auth = { path = "crates/aret-auth" }
+aret-events = { path = "crates/aret-events" }
+aret-testing = { path = "crates/aret-testing" }
 
 # HTTP server
 axum = "0.8.9"
@@ -31,7 +33,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-uuid = { version = "1.29", features = ["serde"] }
+uuid = { version = "1.29", features = ["serde", "v5"] }
 time = { version = "0.3.55", features = ["serde", "formatting", "parsing", "macros"] }
 base64 = "0.23"
 # GPX 1.0/1.1 reading and writing (georust)
@@ -40,7 +42,15 @@ geo-types = "0.7"   # points for writing GPX
 
 # database: PostgreSQL + PostGIS (ADR-0002). Runtime-checked queries (no DATABASE_URL at build time);
 # integration tests cover them. No TLS: the database is on the private Compose/cluster network.
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-none", "postgres", "uuid", "time", "migrate", "macros"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-none", "postgres", "uuid", "time", "json", "migrate", "macros"] }
+
+# events: NATS JetStream client (ADR-0009). JetStream only; no TLS on the private network.
+async-nats = { version = "0.53", default-features = false, features = ["jetstream"] }
+
+# HTTP client for the Kratos admin API (identity-svc). No TLS: Kratos is on the private network.
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+# constant-time comparison of shared secrets (Kratos web hook)
+subtle = "2.6"
 
 # auth: verify Kratos session JWTs (ES256). `rust_crypto` = pure-Rust crypto, no C toolchain needed
 # for the static musl images.
@@ -70,3 +80,12 @@ unwrap_used = "warn"                      # prefer patterns or `expect("reason")
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Local Compose images (compose.yaml, PROFILE build arg): optimised, but without the slow
+# whole-program steps of `release`, and incremental, so a rebuild after a small change is quick.
+# CI and production images keep `release`.
+[profile.docker-dev]
+inherits = "release"
+lto = false
+codegen-units = 256
+incremental = true

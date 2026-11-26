@@ -51,6 +51,24 @@ selfservice:
       after:
         password:
           hooks:
+            # Tell identity-svc about the new account (user.created, aret-backend#12). Fire-and-forget,
+            # so sign-ups never wait for or fail on identity-svc; its catch-up loop finds lost calls.
+            # Must stay first: hooks after `session` don't run for API flows.
+            - hook: web_hook
+              config:
+                url: http://identity:8080/internal/kratos/registration
+                method: POST
+                body: file:///etc/config/kratos/webhook-registration.jsonnet
+                response:
+                  ignore: true
+                auth:
+                  type: api_key
+                  config:
+                    name: X-Aret-Webhook-Secret
+                    in: header
+                    # Real value from .env, set by compose.yaml:
+                    # SELFSERVICE_FLOWS_REGISTRATION_AFTER_PASSWORD_HOOKS_0_CONFIG_AUTH_CONFIG_VALUE
+                    value: set-by-environment
             - hook: session               # sign the user in right after registering
             - hook: show_verification_ui  # tell the client which verification flow got the code
     verification:

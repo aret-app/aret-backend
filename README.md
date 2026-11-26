@@ -8,8 +8,10 @@ One Cargo workspace, one binary and container per service
 crates/
   aret-common/   config from env, problem+json errors, logging, /health, graceful shutdown
   aret-auth/     AuthenticatedUser extractor (Kratos verification: #3)
+  aret-events/   event types, transactional outbox, NATS JetStream publisher
+  aret-testing/  throwaway test databases (dev-dependency only)
 services/
-  identity/      aret-identity  — adapter for Ory Kratos           (port 8081)
+  identity/      aret-identity  — adapter for Ory Kratos, user events (port 8081)
   tracks/        aret-tracks    — recorded tracks, PostGIS          (port 8082)
 ```
 
@@ -59,13 +61,16 @@ Requirements: Docker with Compose (e.g. `brew install colima docker docker-compo
 ```bash
 scripts/dev-env.sh            # once: private .env + session-JWT keys in dev/secrets/ (git-ignored)
 docker compose up -d          # start (add --build after changing Rust code)
-docker compose ps             # status; kratos-migrate should show "exited (0)"
+docker compose ps             # status; kratos-migrate and postgres-setup show "exited (0)"
 docker compose logs -f kratos # follow one service's logs
 docker compose down           # stop; `down -v` also deletes all local data
 ```
 
-Postgres creates one role per service on first start ([dev/postgres/20-aret.sh](dev/postgres/20-aret.sh)):
-`kratos` owns database `kratos`; `tracks` owns schema `tracks` in database `aret`.
+Postgres has one role per service ([dev/postgres/setup.sh](dev/postgres/setup.sh), run by the one-shot
+`postgres-setup` service on every `up`, so a new service's role appears without wiping data):
+`kratos` owns database `kratos`; `tracks` and `identity` own their schemas in database `aret`.
+After pulling changes that add a variable, run `scripts/dev-env.sh` again: it adds the missing ones
+and keeps your existing values.
 Kratos config: [dev/kratos/](dev/kratos/) — accounts hold only a verified email (GDPR data minimisation).
 
 Try a registration the way the iOS app will (Kratos API flow), then open Mailpit at
@@ -136,6 +141,33 @@ Limits: 2–100,000 points, time never going backwards, title ≤ 200 characters
 Postgres (password from your `.env`) and drops it afterwards. Without the stack running they print
 `skipped: …` and pass. CI always runs them (`TEST_DATABASE_URL`, `REQUIRE_DB=1`).
 
+## Events (NATS JetStream)
+Services announce what happened as events on the `ARET_EVENTS` stream (subjects `aret.>`, kept 30
+days; ADR-0009, [crates/aret-events](crates/aret-events/src/lib.rs)). Events carry **ids only**,
+never personal data:
+
+```json
+{"id": "<uuid>", "occurred_at": "2026-11-26T10:00:00Z", "type": "user_created", "user_id": "<kratos identity id>"}
+```
+
+| Subject | When | Published by |
+|---|---|---|
+| `aret.user.created` | an account was registered (#12) | aret-identity |
+
+**No event is lost:** a service writes the event to its `outbox` table in the same transaction as
+its change; a relay publishes it and marks it sent. Event ids are deterministic (UUID v5 of
+subject + user), so retries and duplicates are dropped by the outbox and by JetStream (1 h window).
+Consumers must still tolerate a repeat.
+
+**How aret-identity learns about new accounts:** Kratos calls `POST /internal/kratos/registration`
+(secret header, body from [webhook-registration.jsonnet](dev/kratos/webhook-registration.jsonnet))
+after saving the account, fire-and-forget, so sign-ups never wait for or fail on identity-svc.
+Every 5 minutes a catch-up loop lists all accounts through the Kratos admin API and announces any the
+web hook missed. (A blocking hook can't be used: Kratos runs it before the account has an id.)
+`/internal/*` is never routed by the gateway.
+
+Check: after a sign-up, `curl -s '127.0.0.1:8222/jsz?streams=true' | jq '.account_details[0].stream_detail[0].state.messages'`.
+
 ## Account recovery (forgot password)
 Kratos's recovery flow with a one-time code ([dev/kratos/kratos.yml](dev/kratos/kratos.yml), aret-backend#15):
 
@@ -161,7 +193,10 @@ Rules (all tested end to end):
 | `ARET_HTTP_ADDR` | `127.0.0.1:<service port>` | Listen address (`0.0.0.0:8080` in containers) |
 | `RUST_LOG` | `info` | Log level, e.g. `debug` or `aret_tracks=debug,info` |
 | `ARET_LOG_FORMAT` | text | `json` for structured logs (set in containers) |
-| `DATABASE_URL` | — (required by aret-tracks) | e.g. `postgres://tracks:<TRACKS_DB_PASSWORD>@127.0.0.1:5432/aret` |
+| `DATABASE_URL` | — (required by aret-tracks, aret-identity) | e.g. `postgres://tracks:<TRACKS_DB_PASSWORD>@127.0.0.1:5432/aret` |
+| `NATS_URL` | — (required by aret-identity) | e.g. `nats://127.0.0.1:4222` |
+| `KRATOS_ADMIN_URL` | — (required by aret-identity) | Kratos admin API, e.g. `http://127.0.0.1:4434`; private network only |
+| `ARET_KRATOS_WEBHOOK_SECRET` | — (required by aret-identity) | Shared secret of the Kratos web hook, ≥ 32 characters (`KRATOS_WEBHOOK_SECRET` in `.env`) |
 | `ARET_JWKS_PATH` | `dev/secrets/jwks.public.json` | Public keys that verify Kratos session JWTs (services with login) |
 | `ARET_JWT_ISSUER` | `http://127.0.0.1:8080/kratos/` | Expected `iss` of session JWTs: Kratos's public URL |
 
