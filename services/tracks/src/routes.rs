@@ -109,6 +109,7 @@ async fn save(
             StatusCode::CONFLICT,
             "this track id is already in use",
         )),
+        SaveOutcome::OwnerDeleted => Err(ApiError::unauthorized("this account was deleted")),
     }
 }
 

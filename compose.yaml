@@ -152,6 +152,11 @@ services:
       KRATOS_ADMIN_URL: http://kratos:4434
       # Kratos sends it with every web hook call (see the kratos service above)
       ARET_KRATOS_WEBHOOK_SECRET: ${KRATOS_WEBHOOK_SECRET:?run scripts/dev-env.sh}
+      # Verify Kratos session JWTs (DELETE /v1/account; crates/aret-auth)
+      ARET_JWKS_PATH: /run/aret/jwks.public.json
+      ARET_JWT_ISSUER: http://127.0.0.1:8080/kratos/
+    volumes:
+      - ./dev/secrets/jwks.public.json:/run/aret/jwks.public.json:ro
     ports:
       - "127.0.0.1:8081:8080"
     depends_on:
@@ -175,6 +180,7 @@ services:
       RUST_LOG: info
       # Role `tracks` owns schema `tracks` in database `aret` (dev/postgres/setup.sh)
       DATABASE_URL: postgres://tracks:${TRACKS_DB_PASSWORD}@postgres:5432/aret
+      NATS_URL: nats://nats:4222   # purges on user.deleted, answers purge.completed
       # Verify Kratos session JWTs (crates/aret-auth)
       ARET_JWKS_PATH: /run/aret/jwks.public.json
       ARET_JWT_ISSUER: http://127.0.0.1:8080/kratos/

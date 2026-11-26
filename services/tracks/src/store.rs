@@ -2,7 +2,9 @@
 
 use std::fmt::Write as _;
 
-use sqlx::PgPool;
+use aret_events::outbox;
+use aret_events::{Envelope, Event, Service};
+use sqlx::{PgConnection, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -18,6 +20,63 @@ pub enum SaveOutcome {
     AlreadySaved(TrackSummary),
     /// Another user's track has this id.
     IdTakenByAnotherUser,
+    /// The owner deleted their account (their token is still valid for a few minutes).
+    OwnerDeleted,
+}
+
+/// Locks `owner`'s data until the transaction ends: shared for saving a track, exclusive for the
+/// purge. A save that started before the purge finishes first (and is then purged); a save after
+/// the purge sees the tombstone. Without it, a save racing the purge could leave a track behind.
+async fn lock_owner(
+    connection: &mut PgConnection,
+    owner: Uuid,
+    exclusive: bool,
+) -> Result<(), sqlx::Error> {
+    let query = if exclusive {
+        "SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))"
+    } else {
+        "SELECT pg_advisory_xact_lock_shared(hashtextextended($1::text, 0))"
+    };
+    sqlx::query(query).bind(owner).execute(connection).await?;
+    Ok(())
+}
+
+/// Deletes every track of a deleted user, remembers the deletion (so their still-valid tokens
+/// can't add new ones) and queues `purge.completed`, all in one transaction. Idempotent: a repeated
+/// `user.deleted` deletes nothing more and queues no new event. Returns the number of tracks
+/// deleted.
+pub async fn purge_user(pool: &PgPool, user_id: Uuid) -> Result<u64, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    lock_owner(&mut transaction, user_id, true).await?;
+    sqlx::query("INSERT INTO deleted_users (user_id) VALUES ($1) ON CONFLICT DO NOTHING")
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+    let deleted = sqlx::query("DELETE FROM tracks WHERE owner_id = $1")
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+    let confirmation = Envelope::new(Event::PurgeCompleted {
+        user_id,
+        service: Service::Tracks,
+    });
+    outbox::enqueue(&mut transaction, &confirmation).await?;
+    transaction.commit().await?;
+    Ok(deleted)
+}
+
+/// Handles one event from the `aret.user.deleted` consumer.
+pub async fn handle_user_event(pool: &PgPool, envelope: Envelope) -> Result<(), sqlx::Error> {
+    match envelope.event {
+        Event::UserDeleted { user_id } => {
+            let deleted = purge_user(pool, user_id).await?;
+            tracing::info!(%user_id, tracks = deleted, "purged a deleted user's tracks");
+            Ok(())
+        }
+        // The consumer only subscribes to user.deleted
+        Event::UserCreated { .. } | Event::PurgeCompleted { .. } => Ok(()),
+    }
 }
 
 /// Stores a validated track for `owner`; idempotent on the track id. The distance is computed by
@@ -30,6 +89,16 @@ pub async fn save_track(
 ) -> Result<SaveOutcome, sqlx::Error> {
     let point_count =
         i32::try_from(track.points.len()).expect("point count is validated to fit in i32");
+    let mut transaction = pool.begin().await?;
+    lock_owner(&mut transaction, owner, false).await?;
+    let owner_deleted: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM deleted_users WHERE user_id = $1)")
+            .bind(owner)
+            .fetch_one(&mut *transaction)
+            .await?;
+    if owner_deleted {
+        return Ok(SaveOutcome::OwnerDeleted);
+    }
     let created: Option<TrackSummary> = sqlx::query_as(
         "INSERT INTO tracks (id, owner_id, title, started_at, ended_at, distance_m, ascent_m, \
                              descent_m, point_count, geom) \
@@ -48,8 +117,9 @@ pub async fn save_track(
     .bind(gain.descent_m)
     .bind(point_count)
     .bind(line_string_zm(&track.points))
-    .fetch_optional(pool)
+    .fetch_optional(&mut *transaction)
     .await?;
+    transaction.commit().await?;
 
     if let Some(summary) = created {
         return Ok(SaveOutcome::Created(summary));
