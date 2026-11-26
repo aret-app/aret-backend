@@ -23,9 +23,14 @@ const SECRET: &str = "0123456789abcdef0123456789abcdef";
 
 fn app(pool: &PgPool) -> Router {
     let webhook_secret = WebhookSecret::try_new(SECRET).expect("valid test secret");
+    let keys = aret_auth::testing::TestKeys::generate("test-key");
+    // Nothing here calls Kratos; the address is never contacted
+    let kratos = KratosAdmin::try_new("http://127.0.0.1:9").expect("client");
     aret_identity::router(AppState {
         pool: pool.clone(),
         webhook_secret,
+        verifier: Arc::new(keys.verifier()),
+        kratos,
     })
 }
 

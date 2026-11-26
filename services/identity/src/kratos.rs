@@ -1,8 +1,11 @@
-//! Kratos admin API client, and the catch-up loop that guarantees every account is announced.
+//! Kratos admin API client, and the catch-up loop that keeps identity-svc and Kratos in step.
 //!
-//! The registration web hook is fire-and-forget, so a call can be lost (identity-svc restarting,
-//! a network error). Every few minutes the catch-up loop lists all Kratos identities and records
-//! any it hasn't seen ([`crate::users::record`]), which queues their `user.created`.
+//! Every few minutes the loop:
+//! - lists all Kratos identities and records any it hasn't seen ([`crate::users::record`]), which
+//!   queues their `user.created`: the registration web hook is fire-and-forget, so a call can be
+//!   lost (identity-svc restarting, a network error)
+//! - deletes from Kratos any deleted account still there (the first attempt failed)
+//! - warns about deleted accounts whose purge some service hasn't confirmed
 
 use std::time::Duration;
 
@@ -20,6 +23,10 @@ pub const KRATOS_ADMIN_URL_ENV: &str = "KRATOS_ADMIN_URL";
 const PAGE_SIZE: u32 = 500;
 /// Time limit for one admin API request.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Warn when a service hasn't confirmed a purge this long after the deletion. GDPR allows one
+/// month in total; this leaves time to fix the service.
+const PURGE_WARN_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// A Kratos admin API call failed.
 #[must_use]
@@ -58,7 +65,8 @@ pub enum CatchUpError {
     Database(#[from] sqlx::Error),
 }
 
-/// Client for the Kratos admin API.
+/// Client for the Kratos admin API. Cheap to clone (the HTTP client is shared).
+#[derive(Clone)]
 pub struct KratosAdmin {
     client: reqwest::Client,
     base_url: String,
@@ -80,6 +88,17 @@ impl KratosAdmin {
             client,
             base_url: base_url.trim_end_matches('/').to_owned(),
         })
+    }
+
+    /// Deletes an identity: its email, password and every session. Already gone counts as done.
+    pub async fn delete_identity(&self, id: Uuid) -> Result<(), KratosError> {
+        let url = format!("{}/admin/identities/{id}", self.base_url);
+        let response = self.client.delete(&url).send().await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        response.error_for_status()?;
+        Ok(())
     }
 
     /// One page of identity ids, and the token of the next page if there is one.
@@ -137,7 +156,17 @@ pub async fn catch_up_once(pool: &PgPool, kratos: &KratosAdmin) -> Result<Vec<Uu
     }
 }
 
-/// Runs [`catch_up_once`] now and then every `interval`, forever.
+/// Deletes from Kratos every deleted account still there. Returns how many were removed.
+pub async fn finish_deletions(pool: &PgPool, kratos: &KratosAdmin) -> Result<usize, CatchUpError> {
+    let pending = users::pending_kratos_deletions(pool).await?;
+    for &user_id in &pending {
+        kratos.delete_identity(user_id).await?;
+        users::mark_removed_from_kratos(pool, user_id).await?;
+    }
+    Ok(pending.len())
+}
+
+/// Runs the catch-up steps now and then every `interval`, forever.
 pub async fn run_catch_up(pool: PgPool, kratos: KratosAdmin, interval: Duration) {
     loop {
         match catch_up_once(&pool, &kratos).await {
@@ -149,6 +178,21 @@ pub async fn run_catch_up(pool: PgPool, kratos: KratosAdmin, interval: Duration)
             }
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "catch-up failed; retrying later"),
+        }
+        match finish_deletions(&pool, &kratos).await {
+            Ok(0) => {}
+            Ok(count) => tracing::info!(count, "deleted accounts removed from Kratos on retry"),
+            Err(error) => {
+                tracing::warn!(%error, "removing deleted accounts from Kratos failed; retrying later")
+            }
+        }
+        match users::overdue_purges(&pool, PURGE_WARN_AFTER).await {
+            Ok(overdue) => {
+                for purge in overdue {
+                    tracing::warn!(user_id = %purge.user_id, missing = ?purge.missing, "account deleted over a day ago, but these services haven't confirmed purging its data");
+                }
+            }
+            Err(error) => tracing::warn!(%error, "checking purge confirmations failed"),
         }
         tokio::time::sleep(interval).await;
     }

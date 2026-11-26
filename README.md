@@ -153,6 +153,12 @@ never personal data:
 | Subject | When | Published by |
 |---|---|---|
 | `aret.user.created` | an account was registered (#12) | aret-identity |
+| `aret.user.deleted` | the user deleted their account (#13): every service purges their data | aret-identity |
+| `aret.purge.completed` | a service finished purging a deleted user (`"service": "tracks"`) | aret-tracks |
+
+Services react through **durable JetStream consumers** (`aret_events::consumer`): JetStream remembers
+what each one handled, redelivers on failure, and a new consumer first replays the stream. Handlers
+must be idempotent.
 
 **No event is lost:** a service writes the event to its `outbox` table in the same transaction as
 its change; a relay publishes it and marks it sent. Event ids are deterministic (UUID v5 of
@@ -167,6 +173,24 @@ web hook missed. (A blocking hook can't be used: Kratos runs it before the accou
 `/internal/*` is never routed by the gateway.
 
 Check: after a sign-up, `curl -s '127.0.0.1:8222/jsz?streams=true' | jq '.account_details[0].stream_detail[0].state.messages'`.
+
+## Account deletion (GDPR right to erasure)
+`DELETE /v1/account` on aret-identity (aret-backend#13); the test console has a **Delete my account** button.
+
+1. Needs a session JWT from a login in the **last 15 minutes** (claim `authenticated_at`, added by
+   [jwt-claims.jsonnet](dev/kratos/jwt-claims.jsonnet)); otherwise **403**. Answers **202**; repeating is harmless.
+2. identity-svc marks the account deleted (the `users` row stays as an ids-only tombstone) and queues
+   `user.deleted`, in one transaction.
+3. It deletes the identity from Kratos **at once**: email, password and every session are gone, so
+   nobody can sign in. If Kratos is unreachable, the catch-up loop retries.
+4. tracks-svc deletes all the user's tracks, keeps a tombstone (`deleted_users`) and queues
+   `purge.completed`, in one transaction. JWTs stay valid up to 10 minutes, so saving a track checks
+   the tombstone; a per-user lock stops an upload racing the purge from leaving a track behind.
+5. identity-svc records each `purge.completed` (`purges` table) and logs a warning when a service in
+   `Service::ALL_WITH_USER_DATA` hasn't confirmed a day after the deletion. **A new service holding
+   user data must consume `user.deleted`, answer `purge.completed` and be added to that list.**
+
+Nothing is kept after deletion. Keeping anonymous statistics is an open decision (aret-app/aret-docs#25).
 
 ## Account recovery (forgot password)
 Kratos's recovery flow with a one-time code ([dev/kratos/kratos.yml](dev/kratos/kratos.yml), aret-backend#15):
@@ -195,6 +219,7 @@ Rules (all tested end to end):
 | `ARET_LOG_FORMAT` | text | `json` for structured logs (set in containers) |
 | `DATABASE_URL` | — (required by aret-tracks, aret-identity) | e.g. `postgres://tracks:<TRACKS_DB_PASSWORD>@127.0.0.1:5432/aret` |
 | `NATS_URL` | — (required by aret-identity) | e.g. `nats://127.0.0.1:4222` |
+| `NATS_URL` (aret-tracks) | — (required) | Same as above: tracks purges on `user.deleted` |
 | `KRATOS_ADMIN_URL` | — (required by aret-identity) | Kratos admin API, e.g. `http://127.0.0.1:4434`; private network only |
 | `ARET_KRATOS_WEBHOOK_SECRET` | — (required by aret-identity) | Shared secret of the Kratos web hook, ≥ 32 characters (`KRATOS_WEBHOOK_SECRET` in `.env`) |
 | `ARET_JWKS_PATH` | `dev/secrets/jwks.public.json` | Public keys that verify Kratos session JWTs (services with login) |

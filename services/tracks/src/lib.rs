@@ -7,6 +7,10 @@
 //! - `POST /v1/tracks/gpx?id=`: import a GPX file (same rules as `POST /v1/tracks`)
 //! - `GET /v1/tracks/{id}/gpx`: export a track as GPX 1.1
 //!
+//! Account deletion (aret-backend#13): on `user.deleted` the service deletes all the user's tracks,
+//! keeps a tombstone so their still-valid tokens can't save new ones, and answers
+//! `purge.completed` ([`store::purge_user`]).
+//!
 //! Modules: [`model`] (API types and validation), [`gpx_format`] (GPX import/export), [`stats`] (elevation gain), [`store`] (SQL),
 //! [`routes`] (handlers), [`db`] (pool and migrations).
 

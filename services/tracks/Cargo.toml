@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 aret-common.workspace = true
 aret-auth.workspace = true
+aret-events.workspace = true
 axum.workspace = true
 base64.workspace = true
 geo-types.workspace = true

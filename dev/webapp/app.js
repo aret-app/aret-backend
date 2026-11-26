@@ -368,6 +368,72 @@ $("#logout").addEventListener("click", async () => {
   await refreshSession();
 });
 
+// ---------------------------------------------------------------- delete account (GDPR)
+
+/**
+ * Asks identity-svc to delete the account. Returns the HTTP result. A 403 means the last password
+ * entry is older than 15 minutes: the user must confirm their password first.
+ */
+async function requestDeletion() {
+  // Always a new JWT: it carries the login time (`authenticated_at`) identity-svc checks
+  const result = await call("GET", `${KRATOS}/sessions/whoami?tokenize_as=aret`);
+  const token = result.ok ? result.data?.tokenized : null;
+  if (!token) return { ok: false, status: 401, data: { detail: "Log in first." } };
+  return call("DELETE", `${GATEWAY}/api/identity/v1/account`, undefined, {
+    Authorization: `Bearer ${token}`,
+  });
+}
+
+async function finishDeletion(deletion) {
+  if (deletion.status === 403) {
+    $("#reauth-form").hidden = false;
+    $("#reauth-form").password.focus();
+    return showMessage(
+      "For your safety, deleting needs a recent login: you entered your password more than " +
+        "15 minutes ago. Confirm it below.",
+    );
+  }
+  $("#reauth-form").hidden = true;
+  if (!deletion.ok) {
+    return showMessage(deletion.data?.detail ?? `Deletion failed (HTTP ${deletion.status}).`, "bad");
+  }
+  verificationFlowId = null;
+  setJwt(null);
+  showMessage("Account deleted. Your tracks are being removed from every service.", "ok");
+  await refreshSession();
+}
+
+$("#delete-account").addEventListener("click", async () => {
+  const sure = confirm("Delete your Aret account and all your tracks? This can't be undone.");
+  if (!sure) return;
+  await finishDeletion(await requestDeletion());
+});
+
+// Re-authentication: a Kratos login flow with `refresh=true` checks the password again for the
+// current session and updates its login time, without logging out.
+$("#reauth-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  busy(form, async () => {
+    const start = await call("GET", `${KRATOS}/self-service/login/browser?refresh=true`);
+    if (!start.ok) return showMessage(kratosMessages(start.data), "bad");
+    const result = await call("POST", `${KRATOS}/self-service/login?flow=${start.data.id}`, {
+      method: "password",
+      csrf_token: csrfToken(start.data),
+      identifier: $("#session-email").textContent,
+      password: form.password.value,
+    });
+    form.password.value = "";
+    if (!result.ok) return showMessage(kratosMessages(result.data), "bad");
+    await finishDeletion(await requestDeletion());
+  });
+});
+
+$("#reauth-cancel").addEventListener("click", () => {
+  $("#reauth-form").hidden = true;
+  showMessage("Account not deleted.");
+});
+
 // ---------------------------------------------------------------- session JWT + tracks API
 
 /** Decodes a JWT's payload for display only. The services verify the signature, not this page. */
@@ -385,6 +451,9 @@ function setJwt(token) {
   $("#jwt-aud").textContent = [].concat(claims.aud ?? "—").join(", ");
   $("#jwt-iss").textContent = claims.iss;
   $("#jwt-exp").textContent = new Date(claims.exp * 1000).toLocaleTimeString();
+  $("#jwt-login").textContent = claims.authenticated_at
+    ? new Date(claims.authenticated_at).toLocaleTimeString()
+    : "—";
 }
 
 $("#get-jwt").addEventListener("click", async () => {

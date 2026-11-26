@@ -87,7 +87,20 @@
             <button type="button" id="resend-code" class="ghost">Send a new code</button>
           </div>
         </form>
-        <button id="logout" class="ghost">Log out</button>
+        <div class="row">
+          <button id="logout" class="ghost">Log out</button>
+          <button id="delete-account" class="danger">Delete my account</button>
+        </div>
+        <p class="hint">Deleting removes the account and every track for good (GDPR right to erasure).
+          If you logged in more than 15 minutes ago, you'll be asked for your password first.</p>
+        <form id="reauth-form" hidden>
+          <label>Confirm your password to delete the account
+            <input name="password" type="password" autocomplete="current-password" required></label>
+          <div class="row">
+            <button type="submit" class="danger">Confirm and delete</button>
+            <button type="button" id="reauth-cancel" class="ghost">Cancel</button>
+          </div>
+        </form>
       </div>
 
       <p id="account-message" class="message" role="status"></p>
@@ -110,6 +123,7 @@
         <dt>Audience (aud)</dt><dd id="jwt-aud" class="mono"></dd>
         <dt>Issuer (iss)</dt><dd id="jwt-iss" class="mono"></dd>
         <dt>Expires</dt><dd id="jwt-exp"></dd>
+        <dt>Logged in at</dt><dd id="jwt-login"></dd>
       </dl>
       <pre id="api-result" class="mono"></pre>
     </section>

@@ -25,6 +25,7 @@ use axum::http::request::Parts;
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
+use time::{Duration, OffsetDateTime};
 
 /// Environment variable: path of the **public** JSON Web Key Set that verifies session JWTs.
 pub const JWKS_PATH_ENV: &str = "ARET_JWKS_PATH";
@@ -45,6 +46,18 @@ const CLOCK_LEEWAY_SECS: u64 = 30;
 pub struct AuthenticatedUser {
     /// Kratos identity id (the token's `sub` claim).
     pub id: String,
+    /// When the user last entered their credentials (`authenticated_at` claim); `None` for tokens
+    /// without it.
+    pub authenticated_at: Option<OffsetDateTime>,
+}
+
+impl AuthenticatedUser {
+    /// Whether the user logged in within `max_age`, as required for sensitive actions such as
+    /// deleting the account. Tokens without a login time never count as recent.
+    pub fn has_recent_login(&self, max_age: Duration) -> bool {
+        self.authenticated_at
+            .is_some_and(|at| OffsetDateTime::now_utc() - at <= max_age)
+    }
 }
 
 /// The verifier can't be built from its configuration.
@@ -85,6 +98,8 @@ struct VerificationKey {
 #[derive(Deserialize)]
 struct Claims {
     sub: String,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    authenticated_at: Option<OffsetDateTime>,
 }
 
 impl JwtVerifier {
@@ -141,6 +156,7 @@ impl JwtVerifier {
         match jsonwebtoken::decode::<Claims>(token, key, &self.validation) {
             Ok(data) => Ok(AuthenticatedUser {
                 id: data.claims.sub,
+                authenticated_at: data.claims.authenticated_at,
             }),
             Err(_) => Err(ApiError::unauthorized("invalid or expired token")),
         }
@@ -258,10 +274,14 @@ pub mod testing {
         }
     }
 
-    /// Claims as Kratos issues them for `subject`, valid for one minute from now.
+    /// Claims as Kratos issues them for `subject` who logged in just now, valid for one minute.
     pub fn kratos_claims(subject: &str) -> Value {
         let now = jsonwebtoken::get_current_timestamp();
+        let logged_in = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("RFC 3339 formatting");
         json!({
+            "authenticated_at": logged_in,
             "sub": subject,
             "iss": TEST_ISSUER,
             "aud": AUDIENCE,
@@ -295,12 +315,32 @@ mod tests {
             .verifier()
             .verify(&keys.sign(&kratos_claims(SUBJECT)))
             .unwrap();
+        assert_eq!(user.id, "4c3b9a1e-identity-id");
+        assert!(user.has_recent_login(Duration::minutes(1)));
+    }
+
+    #[test]
+    fn reads_the_login_time() {
+        let keys = TestKeys::generate("dev-1");
+        let mut claims = kratos_claims(SUBJECT);
+        // Kratos's format: RFC 3339 with nanoseconds
+        claims["authenticated_at"] = json!("2026-11-26T15:42:03.123456789Z");
+        let user = keys.verifier().verify(&keys.sign(&claims)).unwrap();
         assert_eq!(
-            user,
-            AuthenticatedUser {
-                id: "4c3b9a1e-identity-id".to_owned()
-            }
+            user.authenticated_at,
+            Some(time::macros::datetime!(2026-11-26 15:42:03.123456789 UTC))
         );
+        assert!(!user.has_recent_login(Duration::minutes(15)));
+    }
+
+    #[test]
+    fn a_token_without_login_time_is_never_recent() {
+        let keys = TestKeys::generate("dev-1");
+        let mut claims = kratos_claims(SUBJECT);
+        claims.as_object_mut().unwrap().remove("authenticated_at");
+        let user = keys.verifier().verify(&keys.sign(&claims)).unwrap();
+        assert_eq!(user.authenticated_at, None);
+        assert!(!user.has_recent_login(Duration::minutes(15)));
     }
 
     #[test]

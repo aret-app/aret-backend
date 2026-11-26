@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+aret-auth.workspace = true
 aret-common.workspace = true
 aret-events.workspace = true
 axum.workspace = true
@@ -18,11 +19,13 @@ serde_json.workspace = true
 sqlx.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
+time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+aret-auth = { workspace = true, features = ["test-support"] }
 aret-testing.workspace = true
 tower.workspace = true
 uuid = { workspace = true, features = ["v4"] }

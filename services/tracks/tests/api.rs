@@ -374,3 +374,130 @@ async fn rejects_broken_gpx_uploads() {
     );
     db.drop_database().await;
 }
+
+// ---- account deletion (aret-backend#13)
+
+/// Number of tracks `owner` has in the database.
+async fn track_count(db: &TestDb, owner: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM tracks WHERE owner_id = $1")
+        .bind(owner)
+        .fetch_one(&db.pool)
+        .await
+        .expect("count tracks")
+}
+
+/// `purge.completed` events waiting in the outbox.
+async fn purge_confirmations(db: &TestDb) -> Vec<Value> {
+    sqlx::query_scalar("SELECT payload FROM outbox WHERE subject = 'aret.purge.completed'")
+        .fetch_all(&db.pool)
+        .await
+        .expect("read outbox")
+}
+
+#[tokio::test]
+async fn purging_a_deleted_user_removes_only_their_tracks() {
+    let Some(db) = TestDb::try_create(&aret_tracks::db::MIGRATOR).await else {
+        return;
+    };
+    let api = TestApi::new(&db);
+    let (leaving, staying) = (Uuid::new_v4(), Uuid::new_v4());
+    for minute in [0, 20] {
+        let (status, _) = api
+            .send(
+                Some(leaving),
+                "POST",
+                "/v1/tracks",
+                Some(hike(Uuid::new_v4(), minute)),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    let kept = Uuid::new_v4();
+    let (status, _) = api
+        .send(Some(staying), "POST", "/v1/tracks", Some(hike(kept, 0)))
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    assert_eq!(
+        aret_tracks::store::purge_user(&db.pool, leaving)
+            .await
+            .expect("purge"),
+        2
+    );
+    assert_eq!(track_count(&db, leaving).await, 0);
+    assert_eq!(track_count(&db, staying).await, 1);
+
+    // The confirmation for identity-svc, queued in the same transaction
+    let confirmations = purge_confirmations(&db).await;
+    assert_eq!(confirmations.len(), 1);
+    assert_eq!(confirmations[0]["type"], "purge_completed");
+    assert_eq!(confirmations[0]["service"], "tracks");
+    assert_eq!(confirmations[0]["user_id"], json!(leaving));
+
+    // user.deleted delivered again: nothing more to delete, no second confirmation
+    assert_eq!(
+        aret_tracks::store::purge_user(&db.pool, leaving)
+            .await
+            .expect("purge"),
+        0
+    );
+    assert_eq!(purge_confirmations(&db).await.len(), 1);
+
+    // The deleted user's token is valid a few more minutes, but nothing can be saved or found
+    let (status, _) = api
+        .send(
+            Some(leaving),
+            "POST",
+            "/v1/tracks",
+            Some(hike(Uuid::new_v4(), 40)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, page) = api.send(Some(leaving), "GET", "/v1/tracks", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["items"], json!([]));
+    assert_eq!(track_count(&db, leaving).await, 0);
+    db.drop_database().await;
+}
+
+/// Uploads still in flight while the purge runs (the app syncing at the moment of deletion) never
+/// leave a track behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn uploads_racing_the_purge_leave_nothing_behind() {
+    let Some(db) = TestDb::try_create(&aret_tracks::db::MIGRATOR).await else {
+        return;
+    };
+    let api = Arc::new(TestApi::new(&db));
+    let user = Uuid::new_v4();
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for minute in 0..20 {
+        let api = Arc::clone(&api);
+        tasks.spawn(async move {
+            let (status, _) = api
+                .send(
+                    Some(user),
+                    "POST",
+                    "/v1/tracks",
+                    Some(hike(Uuid::new_v4(), minute)),
+                )
+                .await;
+            assert!(
+                status == StatusCode::CREATED || status == StatusCode::UNAUTHORIZED,
+                "unexpected {status}"
+            );
+        });
+    }
+    let pool = db.pool.clone();
+    tasks.spawn(async move {
+        aret_tracks::store::purge_user(&pool, user)
+            .await
+            .expect("purge");
+    });
+    while let Some(result) = tasks.join_next().await {
+        result.expect("task finished");
+    }
+
+    assert_eq!(track_count(&db, user).await, 0);
+    db.drop_database().await;
+}
