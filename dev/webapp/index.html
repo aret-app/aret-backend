@@ -153,8 +153,18 @@
     <section class="card map-card">
       <div class="card-head">
         <h2>Map <small>pilot tiles from aret-tiles.pages.dev</small></h2>
+        <label class="toggle"><input type="checkbox" id="show-routes" checked> Pre-built routes</label>
       </div>
       <div id="map"></div>
+      <p class="legend" id="routes-legend">
+        Routes from OpenStreetMap (CAI trails), colour = difficulty:
+        <span style="--c:#2e9d4b">T</span>
+        <span style="--c:#d7301f">E</span>
+        <span style="--c:#1f3a93">EE</span>
+        <span style="--c:#7b3fa0">EEA</span>
+        <span style="--c:#8a8a8a">unknown</span>
+        · <span class="dashed">dashed</span> = incomplete (gaps not joined). Click a route for details.
+      </p>
     </section>
 
     <section class="card log-card">

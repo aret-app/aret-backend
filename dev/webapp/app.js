@@ -1,5 +1,5 @@
 // Aret test console: service status, Kratos accounts (browser flows) and API calls.
-import { showTrack } from "./map.js";
+import { showRoutes, showTrack } from "./map.js";
 
 // Everything goes through the gateway (dev/gateway/Caddyfile):
 //   /kratos/*  → Ory Kratos public API      /api/<service>/*  → our Rust services
@@ -619,3 +619,10 @@ $("#track-download").addEventListener("click", async () => {
 
 refreshStatus();
 refreshSession();
+
+// ---------------------------------------------------------------- pre-built routes on the map
+
+$("#show-routes").addEventListener("change", (event) => {
+  showRoutes(event.currentTarget.checked);
+  $("#routes-legend").hidden = !event.currentTarget.checked;
+});

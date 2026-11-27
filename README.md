@@ -89,13 +89,17 @@ until the iOS app talks to it. Plain HTML + JavaScript in [dev/webapp/](dev/weba
 edit a file and reload the page.
 
 - **Services:** health of Kratos, aret-identity and aret-tracks
-- **Account:** sign up, verify the email with the code from Mailpit, log in, see the session, log out
+- **Account:** sign up, verify the email with the code from Mailpit, log in, see the session, log out,
+  delete the account
   (Kratos *browser* flows: cookies + CSRF, like a real web app; the iOS app uses the API flows)
 - **tracks API:** *Get JWT* (Kratos `whoami?tokenize_as=aret`), then `GET /v1/tracks` with it → 200;
   without a JWT → 401
 - **My tracks:** upload a GPX (try the synthetic `services/tracks/tests/fixtures/sample.gpx`), list your
   tracks, click one to draw it on the map, download it as GPX
-- **Map:** the pilot tiles from `aret-tiles.pages.dev` with a first outdoor style (MapLibre GL JS 6)
+- **Map:** the pilot tiles from `aret-tiles.pages.dev` with a first outdoor style (MapLibre GL JS 6), plus
+  the **pre-built routes** (OpenStreetMap hiking relations, aret-app/aret-maps#4, rebuilt weekly): colour =
+  difficulty (T, E, EE, EEA, unknown), dashed = incomplete (gaps never joined), CAI numbers along the
+  lines; click a route for its details and a link to OpenStreetMap; a checkbox hides them
 - **Requests:** every call the page makes, with its status
 
 The gateway ([dev/gateway/Caddyfile](dev/gateway/Caddyfile)) puts everything on one address, so the
