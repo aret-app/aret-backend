@@ -232,10 +232,15 @@ What a hiker wants after searching "Monte Sagro": a few complete outings, not th
 The network (about 10,000 junctions for the pilot region) is built **in the background** within
 15 seconds of a new catalogue, in about 10 s; tours then take ~100 ms.
 
-**Coverage follows OpenStreetMap's route relations** (ADR-0015). A marked trail drawn only as paths,
-without its relation, is invisible to the network. Example: CAI 7 from Piglionico to Rifugio Rossi isn't a
-relation, so the classic Pania della Croce outing is missing. Adding the relation in OSM fixes it at the
-next weekly build. Routing over every path (ADR-0006) comes later, with "design your own route".
+**Coverage follows OpenStreetMap's route relations** (ADR-0015), which in the pilot region hold almost
+all marked trails: aret-maps' `trail-gaps` measurement found 15,609 km of trail in hiking relations and
+only 39 km of marked paths outside any relation (2026-11-27). The classic Pania della Croce outing is
+there: from Foce del Piglionico by CAI 117 past Rifugio Rossi, then CAI 126 and the Via Normale. Tours
+can still miss a trail where a relation has a gap (91 incomplete routes; gaps are never bridged) or
+where the path is unmarked (about 12,000 km of other paths). Routing over every path (ADR-0006) comes
+later, with "design your own route".
+
+Route labels: "CAI 126" for CAI trails; other routes by name (e.g. "Fosco Maraini 6"), else their number.
 
 The test console's **Find tours** box uses it: type a place, pick it, and see its tours as cards (time,
 distance, climb, difficulty, routes up and down). **Only the tours are on the map**, numbered from their

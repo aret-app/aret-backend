@@ -750,7 +750,8 @@ async fn build_index(pool: &PgPool, version: String) -> Result<TourIndex, sqlx::
 
     let fetched = std::time::Instant::now();
     let rows: Vec<RouteRow> = sqlx::query_as(
-        "SELECT osm_id, name, ref, difficulty, ST_AsGeoJSON(geom, 7)::jsonb, profiles FROM routes \
+        "SELECT osm_id, name, ref, coalesce(cai, false), difficulty, ST_AsGeoJSON(geom, 7)::jsonb, profiles \
+         FROM routes \
          WHERE profiles IS NOT NULL",
     )
     .fetch_all(pool)
@@ -778,7 +779,7 @@ async fn build_index(pool: &PgPool, version: String) -> Result<TourIndex, sqlx::
         let routes: Vec<RouteInput> = rows
             .into_iter()
             .filter_map(
-                |(osm_id, name, reference, difficulty, geometry, profiles)| {
+                |(osm_id, name, reference, cai, difficulty, geometry, profiles)| {
                     let lines: Vec<Vec<(f64, f64)>> = geometry["coordinates"]
                         .as_array()?
                         .iter()
@@ -789,9 +790,12 @@ async fn build_index(pool: &PgPool, version: String) -> Result<TourIndex, sqlx::
                         .iter()
                         .map(pairs)
                         .collect::<Option<_>>()?;
+                    // "CAI 126" only for CAI trails; another network's number alone says
+                    // little ("FM6"), so its name comes first
                     let label = match (&reference, &name) {
-                        (Some(r), _) => format!("CAI {r}"),
-                        (None, Some(n)) => n.clone(),
+                        (Some(r), _) if cai => format!("CAI {r}"),
+                        (_, Some(n)) => n.clone(),
+                        (Some(r), None) => r.clone(),
                         (None, None) => format!("route {osm_id}"),
                     };
                     Some(RouteInput {
@@ -914,11 +918,12 @@ type LandmarkRow = (
     f64,
 );
 
-/// osm_id, name, ref, difficulty, geometry (GeoJSON), profiles.
+/// osm_id, name, ref, CAI trail, difficulty, geometry (GeoJSON), profiles.
 type RouteRow = (
     i64,
     Option<String>,
     Option<String>,
+    bool,
     String,
     Value,
     Option<Value>,
