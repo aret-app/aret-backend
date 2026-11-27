@@ -297,16 +297,10 @@ async fn a_tour_detail_has_a_profile_to_hover_and_a_gpx() {
     for key in ["id", "title", "length_m", "duration_min", "geometry"] {
         assert_eq!(tour[key], first[key], "{key}");
     }
-    assert!(
-        tour["description"]
-            .as_str()
-            .is_some_and(|d| d.contains("check the weather"))
-    );
-    assert!(
-        tour["grade"]["meaning"]
-            .as_str()
-            .is_some_and(|m| !m.is_empty())
-    );
+    // Numbers and data only: no generated text
+    for key in ["description", "fitness", "grade"] {
+        assert!(tour[key].is_null(), "{key}");
+    }
 
     // Samples every 50 m over the whole round trip, each with its position on the map
     let samples = tour["profile"]["samples"].as_array().expect("samples");
@@ -326,6 +320,27 @@ async fn a_tour_detail_has_a_profile_to_hover_and_a_gpx() {
         assert!((10.2..10.5).contains(&lon.as_f64().expect("lon")));
         assert!((43.9..44.2).contains(&lat.as_f64().expect("lat")));
     }
+    // The difficulty stretch by stretch: back to back from the start to the end, each a CAI grade
+    // or unknown, the hardest being the tour's
+    let stretches = tour["difficulties"].as_array().expect("difficulties");
+    assert_eq!(stretches[0]["from_m"], 0.0);
+    assert!(
+        (stretches.last().expect("one")["to_m"]
+            .as_f64()
+            .expect("end")
+            - length)
+            .abs()
+            < length * 0.02
+    );
+    for pair in stretches.windows(2) {
+        assert_eq!(pair[0]["to_m"], pair[1]["from_m"]);
+        assert_ne!(pair[0]["difficulty"], pair[1]["difficulty"], "merged");
+    }
+    assert!(
+        stretches
+            .iter()
+            .any(|g| g["difficulty"] == tour["difficulty"])
+    );
     // The highest point is the summit, reached on the way
     assert!(tour["highest"]["ele"].as_f64() >= tour["lowest"]["ele"].as_f64());
     assert!(tour["climbs"].as_array().is_some_and(|c| !c.is_empty()));

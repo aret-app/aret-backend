@@ -1,12 +1,13 @@
 //! Everything a tour's detail card needs (aret-backend#24): the round-trip track, an elevation
 //! profile with the position of each sample (so hovering the chart can mark the spot on the map),
-//! highest and lowest points, the long climbs and descents, the named places along the way, and a
-//! plain-language description. The front end draws; it computes nothing.
+//! highest and lowest points, the long climbs and descents, the difficulty stretch by stretch, and
+//! the named places along the way. Only numbers and data from OpenStreetMap and TINITALY: no
+//! generated text. The front end draws; it computes nothing.
 
 use std::collections::HashMap;
 
 use crate::network::distance;
-use crate::tours::{AccessKind, Shape, Tour};
+use crate::tours::{Graded, Tour};
 
 /// Distance between profile samples, in metres.
 pub const SAMPLE_STEP_M: f64 = 50.0;
@@ -26,6 +27,8 @@ pub struct Track {
     pub line: Vec<(f64, f64)>,
     /// (distance from the start in metres, elevation in metres).
     pub profile: Vec<(f64, f64)>,
+    /// The difficulty stretch by stretch, along `profile`'s distances.
+    pub grades: Vec<Graded>,
 }
 
 /// One profile sample.
@@ -122,10 +125,8 @@ pub fn track(tour: &Tour) -> Track {
                 .collect::<Vec<_>>(),
         )
     };
-    let (down_line, down_profile) = match &tour.down {
-        Some(down) => reversed(&down.line, &down.profile),
-        None => reversed(&tour.up.line, &tour.up.profile),
-    };
+    let down_leg = tour.down.as_ref().unwrap_or(&tour.up);
+    let (down_line, down_profile) = reversed(&down_leg.line, &down_leg.profile);
     let mut line = tour.up.line.clone();
     line.extend(down_line.into_iter().skip(1));
     let offset = tour.up.profile.last().map_or(0.0, |&(d, _)| d);
@@ -136,7 +137,56 @@ pub fn track(tour: &Tour) -> Track {
             .skip(1)
             .map(|(d, e)| (offset + d, e)),
     );
-    Track { line, profile }
+    // The way down's stretches, walked backwards
+    let down_length = down_leg.profile.last().map_or(0.0, |&(d, _)| d);
+    let mut grades: Vec<Graded> = Vec::new();
+    let down_grades = down_leg.grades.iter().rev().map(|g| Graded {
+        from_m: offset + down_length - g.to_m,
+        to_m: offset + down_length - g.from_m,
+        difficulty: g.difficulty.clone(),
+    });
+    // Back to back from 0 to the end: stretches under 1 m that were skipped leave no gaps
+    for grade in tour.up.grades.iter().cloned().chain(down_grades) {
+        match grades.last_mut() {
+            Some(last) if last.difficulty == grade.difficulty => last.to_m = grade.to_m,
+            Some(last) => {
+                let from_m = last.to_m;
+                grades.push(Graded { from_m, ..grade });
+            }
+            None => grades.push(Graded {
+                from_m: 0.0,
+                ..grade
+            }),
+        }
+    }
+    if let (Some(last), Some(&(end, _))) = (grades.last_mut(), profile.last()) {
+        last.to_m = end;
+    }
+    Track {
+        line,
+        profile,
+        grades,
+    }
+}
+
+/// The difficulty stretch by stretch, in the samples' distances (along the line).
+pub fn difficulties(track: &Track) -> Vec<Graded> {
+    let line_length = cumulative(&track.line).last().copied().unwrap_or(0.0);
+    let profile_length = track.profile.last().map_or(0.0, |&(d, _)| d);
+    let scale = if profile_length > 0.0 {
+        line_length / profile_length
+    } else {
+        1.0
+    };
+    track
+        .grades
+        .iter()
+        .map(|g| Graded {
+            from_m: g.from_m * scale,
+            to_m: g.to_m * scale,
+            difficulty: g.difficulty.clone(),
+        })
+        .collect()
 }
 
 /// Samples every [`SAMPLE_STEP_M`] along the track, with their positions (and the last point).
@@ -297,62 +347,6 @@ pub fn waypoints(samples: &[Sample], landmarks: &Landmarks) -> Vec<Waypoint> {
     found
 }
 
-/// The CAI grade's name and what it means for a hiker.
-pub fn difficulty_info(grade: &str) -> (&'static str, &'static str) {
-    match grade {
-        "T" => (
-            "Tourist (T)",
-            "Easy walk on clear, wide paths without steep or exposed stretches.",
-        ),
-        "E" => (
-            "Hiking (E)",
-            "Marked mountain paths, sometimes steep or on rough ground: a sure foot and hiking boots needed.",
-        ),
-        "EE" => (
-            "Expert hikers (EE)",
-            "Steep, exposed or trackless stretches, scree or easy rock: sure-footedness, a head for heights and mountain experience needed.",
-        ),
-        g if g.starts_with("EEA") => (
-            "Equipped route (EEA)",
-            "Via ferrata or protected passages: climbing harness, via ferrata kit and experience needed.",
-        ),
-        _ => (
-            "Unknown",
-            "Difficulty not recorded in OpenStreetMap for every stretch: check the trail before you go.",
-        ),
-    }
-}
-
-/// How fit a hiker should be, from walking time and climbing.
-pub fn fitness(duration_min: u32, ascent_m: f64) -> &'static str {
-    if duration_min <= 180 && ascent_m <= 600.0 {
-        "Moderate fitness is enough."
-    } else if duration_min <= 360 && ascent_m <= 1200.0 {
-        "Good fitness needed."
-    } else {
-        "Very good fitness needed: a long, demanding day."
-    }
-}
-
-/// A short plain-language description from the tour's facts. Never says a tour is safe: times are
-/// estimates and conditions change.
-pub fn description(tour: &Tour, place_name: &str) -> String {
-    let (_, meaning) = difficulty_info(&tour.difficulty);
-    let shape = match tour.shape {
-        Shape::Loop => "A loop: up one way, down another.",
-        Shape::OutAndBack => "Out and back on the same path.",
-    };
-    let start = match tour.start.kind {
-        AccessKind::CarPark => format!("It starts at a car park ({}).", tour.start.name),
-        AccessKind::Village => format!("It starts in {}.", tour.start.name),
-    };
-    format!(
-        "{place_name} from {}. {meaning} {} {shape} {start} The walking time is an estimate without breaks; check the weather and the trail before you go.",
-        tour.start.name,
-        fitness(tour.duration_min, tour.ascent_m),
-    )
-}
-
 fn cumulative(line: &[(f64, f64)]) -> Vec<f64> {
     let mut total = 0.0;
     let mut out = vec![0.0];
@@ -411,6 +405,7 @@ mod tests {
         let track = Track {
             line: vec![(10.3, 44.0), (10.3, 44.009)],
             profile: vec![(0.0, 500.0), (1000.0, 700.0)],
+            grades: Vec::new(),
         };
         let found = samples(&track);
         assert_eq!(found.len(), 22, "0, 50, …, 1000 m and the end");
@@ -477,13 +472,5 @@ mod tests {
         let names: Vec<&str> = found.iter().map(|w| w.landmark.name.as_str()).collect();
         assert_eq!(names, vec!["Rifugio Basso", "Passo Alto"]);
         assert!((found[1].distance_m - 1000.0).abs() < 60.0);
-    }
-
-    #[test]
-    fn grades_are_explained_and_unknown_says_check() {
-        assert_eq!(difficulty_info("EE").0, "Expert hikers (EE)");
-        assert!(difficulty_info("unknown").1.contains("check"));
-        assert_eq!(fitness(150, 500.0), "Moderate fitness is enough.");
-        assert!(fitness(500, 1500.0).starts_with("Very good"));
     }
 }

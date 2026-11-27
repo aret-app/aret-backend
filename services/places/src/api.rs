@@ -7,7 +7,7 @@
 //! - `GET /v1/routes/{osm_id}`: one route with geometry and elevation profile
 //! - `GET /v1/routes/{osm_id}/gpx`: the route as GPX 1.1
 //! - `GET /v1/tours?to=<place id>`: ready-to-walk round trips to a place ([`crate::tours`])
-//! - `GET /v1/tours/detail?to=&from=`: one tour's detail card ([`crate::detail`])
+//! - `GET /v1/tours/detail?to=&from=`: one tour's detail card, numbers and data only ([`crate::detail`])
 //! - `GET /v1/tours/gpx?to=&from=`: one tour as GPX 1.1
 
 use aret_common::error::ApiError;
@@ -518,10 +518,11 @@ async fn find_tour(
     Ok((found, tour))
 }
 
-/// `GET /v1/tours/detail?to=&from=`: everything a tour's detail card shows. The summary of the
-/// list plus a description, the grade explained, the elevation profile every 50 m with the
+/// `GET /v1/tours/detail?to=&from=`: everything a tour's detail card shows, only numbers and data
+/// (no generated text). The summary of the list plus the elevation profile every 50 m with the
 /// position of each sample (`[distance_m, ele, lon, lat]`: hovering the chart can mark the spot on
-/// the map), highest and lowest points, the long climbs and descents, and the named places passed.
+/// the map), the difficulty stretch by stretch, highest and lowest points, the long climbs and
+/// descents, and the named places passed.
 pub async fn tour_detail(
     State(pool): State<PgPool>,
     State(cache): State<std::sync::Arc<TourCache>>,
@@ -534,7 +535,6 @@ pub async fn tour_detail(
     let samples = detail::samples(&track);
     let (climbs, descents) = detail::slopes(&samples);
     let waypoints = detail::waypoints(&samples, &found.index.landmarks);
-    let (grade_name, grade_meaning) = detail::difficulty_info(&tour.difficulty);
     let round_1 = |v: f64| (v * 10.0).round() / 10.0;
     let round_6 = |v: f64| (v * 1e6).round() / 1e6;
     let point = |sample: &detail::Sample| {
@@ -555,13 +555,16 @@ pub async fn tour_detail(
     };
 
     let mut card = tour_summary(&tour, &query.to, &found.place_name);
-    card["description"] = Value::from(detail::description(&tour, &found.place_name));
-    card["fitness"] = Value::from(detail::fitness(tour.duration_min, tour.ascent_m));
-    card["grade"] = json!({
-        "code": tour.difficulty,
-        "name": grade_name,
-        "meaning": grade_meaning,
-    });
+    card["difficulties"] = detail::difficulties(&track)
+        .iter()
+        .map(|g| {
+            json!({
+                "from_m": g.from_m.round(),
+                "to_m": g.to_m.round(),
+                "difficulty": g.difficulty,
+            })
+        })
+        .collect();
     card["profile"] = json!({
         "step_m": detail::SAMPLE_STEP_M,
         "columns": ["distance_m", "ele", "lon", "lat"],
@@ -642,8 +645,7 @@ pub async fn tour_gpx(
             name: Some(title),
             description: Some(format!(
                 "{ATTRIBUTION}, {LICENSE} (https://www.openstreetmap.org/copyright). Elevation \
-                 TINITALY/INGV, CC BY 4.0. {}",
-                detail::description(&tour, &found.place_name)
+                 TINITALY/INGV, CC BY 4.0."
             )),
             links: vec![Link {
                 href: "https://www.openstreetmap.org/copyright".to_owned(),

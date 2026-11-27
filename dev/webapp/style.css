@@ -162,7 +162,6 @@ input[type="file"] { flex: 1; min-width: 0; }
 /* Tour detail */
 .tour-detail-card { grid-column: 1 / -1; }
 .tour-stats { font-size: 1.05rem; margin: 0.2rem 0; font-variant-numeric: tabular-nums; }
-.tour-grade { margin: 0.2rem 0; color: var(--muted); }
 .elevation { margin: 0.8rem 0 0; }
 #elevation-chart { width: 100%; height: 200px; display: block; touch-action: none; cursor: crosshair; }
 #elevation-chart .axis { stroke: var(--line); stroke-width: 1; }

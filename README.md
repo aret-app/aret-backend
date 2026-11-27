@@ -219,11 +219,12 @@ What a hiker wants after searching "Monte Sagro": a few complete outings, not th
   way, "unknown" if any stretch is unknown. Up to 6 tours from starts at least 1 km apart.
 - **Answer:** `id` (`<place>~<start>`), title, `shape` (`loop`/`out_and_back`), `start` (id, name, kind,
   position, elevation), `via_up`/`via_down` (route labels), totals, and `geometry` (just the walked part).
-- **Detail card** (`/v1/tours/detail`): everything the app's tour card shows, so the app computes nothing:
-  the summary above plus a `description` (never says "safe"; always "check the weather and the trail"),
-  `grade` (code, name, what it means), `fitness`, `profile.samples` every 50 m as
-  `[distance_m, ele, lon, lat]` (**the position lets the app move a marker on the map while the user
-  moves along the elevation chart**), `highest`/`lowest` (elevation, distance, position), `climbs` and
+- **Detail card** (`/v1/tours/detail`): everything the app's tour card shows, so the app computes nothing.
+  **Only numbers and data** (OpenStreetMap, TINITALY), no generated text: the summary above plus
+  `profile.samples` every 50 m as `[distance_m, ele, lon, lat]` (**the position lets the app move a marker
+  on the map while the user moves along the elevation chart**), `difficulties` (the CAI grade stretch by
+  stretch, `[{from_m, to_m, difficulty}]`, back to back over the whole tour, to colour the chart),
+  `highest`/`lowest` (elevation, distance, position), `climbs` and
   `descents` of at least 100 m (from/to, change, average and steepest gradient over 100 m), `waypoints`
   (peaks, passes, huts, villages and water within 75 m of the track, in order, with distance from the
   start) and the `gpx` path. No social data (photos, ratings, comments): there is none yet.
@@ -238,8 +239,8 @@ next weekly build. Routing over every path (ADR-0006) comes later, with "design 
 
 The test console's **Find tours** box uses it: type a place, pick it, and see its tours as cards (time,
 distance, climb, difficulty, routes up and down). **Only the tours are on the map**, numbered from their
-start; pick one to focus it and open its detail card (elevation chart with a hover marker on the map,
-climbs and descents, places along the way, GPX download), and Clear brings the map back. `GET /v1/routes?near=` (the whole network
+start; pick one to focus it and open its detail card (elevation chart coloured by difficulty, green T to
+purple EEA, with a hover marker on the map; climbs and descents, places along the way, GPX download), and Clear brings the map back. `GET /v1/routes?near=` (the whole network
 around a place) stays for the later "design your own route" mode.
 
 ## Account deletion (GDPR right to erasure)

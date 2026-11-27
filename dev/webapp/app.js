@@ -720,7 +720,7 @@ async function selectTour(index) {
     `${PLACES}/v1/tours/detail?to=${encodeURIComponent(shown.place.id)}&from=${encodeURIComponent(tour.start.id)}`,
   );
   if (!result.ok) return searchMessage(result.data?.detail ?? `Tour detail failed (HTTP ${result.status}).`, "bad");
-  showTourDetail(result.data.tour, TOUR_COLORS[index % TOUR_COLORS.length]);
+  showTourDetail(result.data.tour);
 }
 
 // ---------------------------------------------------------------- tour detail card
@@ -728,16 +728,14 @@ async function selectTour(index) {
 const WAYPOINT_ICONS = { peak: "▲", pass: "⩘", hut: "⌂", water: "💧", settlement: "●" };
 const km = (metres) => `${(metres / 1000).toFixed(1)} km`;
 
-function showTourDetail(tour, color) {
+function showTourDetail(tour) {
   $("#tour-detail").hidden = false;
   $("#tour-detail-title").textContent = tour.title;
   $("#tour-gpx").href = `${PLACES}/${tour.gpx}`;
   $("#tour-stats").textContent =
     `⏱ ${hoursMinutes(tour.duration_min)} · ${km(tour.length_m)} · ↗ ${tour.ascent_m} m · ↘ ${tour.descent_m} m · ` +
-    `highest ${tour.highest?.ele ?? tour.ele_max} m · lowest ${tour.lowest?.ele ?? "?"} m · ${tour.shape === "loop" ? "loop" : "out & back"}`;
-  // The description already explains the grade and the fitness needed
-  $("#tour-grade").innerHTML = `Difficulty: <strong>${escapeHtml(tour.grade.name)}</strong>`;
-  $("#tour-description").textContent = tour.description;
+    `highest ${tour.highest?.ele ?? tour.ele_max} m · lowest ${tour.lowest?.ele ?? "?"} m · ${tour.difficulty} · ` +
+    `${tour.shape === "loop" ? "loop" : "out & back"}`;
 
   const slopes = [
     ...tour.climbs.map((s) => ({ ...s, kind: "↗ climb" })),
@@ -771,8 +769,25 @@ function showTourDetail(tour, color) {
     }),
   );
   showWaypoints(tour.waypoints);
-  elevationChart.draw(tour.profile.samples, tour.waypoints, color);
+  elevationChart.draw(tour.profile.samples, tour.waypoints, tour.difficulties);
+  // Legend: the grades on this tour, easiest first, with how far each is walked
+  const walked = {};
+  for (const g of tour.difficulties) walked[g.difficulty] = (walked[g.difficulty] ?? 0) + g.to_m - g.from_m;
+  $("#elevation-legend").innerHTML = Object.keys(GRADE_COLORS)
+    .filter((grade) => walked[grade] != null || (grade === "EEA" && Object.keys(walked).some((g) => g.startsWith("EEA"))))
+    .map((grade) => {
+      const metres = grade === "EEA"
+        ? Object.entries(walked).filter(([g]) => g.startsWith("EEA")).reduce((sum, [, m]) => sum + m, 0)
+        : walked[grade];
+      return `<span style="--c:${GRADE_COLORS[grade]}">${grade} ${km(metres)}</span>`;
+    })
+    .join("");
 }
+
+// Elevation chart colours: a ramp from easy (green) to hard (purple); grey = not recorded in OSM.
+// The map keeps each tour in its own colour.
+const GRADE_COLORS = { T: "#2e9d4b", E: "#d4b106", EE: "#e8590c", EEA: "#8e44ad", unknown: "#8a8a8a" };
+const gradeColor = (grade) => GRADE_COLORS[grade?.startsWith("EEA") ? "EEA" : grade] ?? GRADE_COLORS.unknown;
 
 /**
  * The elevation profile as SVG: distance across, elevation up. Moving over it shows a cursor with
@@ -783,6 +798,7 @@ const elevationChart = (() => {
   const NS = "http://www.w3.org/2000/svg";
   const PAD = { left: 48, right: 12, top: 12, bottom: 24 };
   let samples = [];
+  let stretches = [];
   let scale = null;
   let layer = null; // the cursor and highlight, redrawn on hover
 
@@ -800,9 +816,13 @@ const elevationChart = (() => {
   };
 
   let drawn = null; // what draw() was given, to redraw at a new width
-  function draw(newSamples, waypoints, color) {
-    drawn = [newSamples, waypoints, color];
+  // The grade at distance `d`
+  const gradeAt = (d) => (stretches.find((g) => d >= g.from_m && d <= g.to_m) ?? stretches.at(-1))?.difficulty ?? "unknown";
+
+  function draw(newSamples, waypoints, difficulties) {
+    drawn = [newSamples, waypoints, difficulties];
     samples = newSamples;
+    stretches = difficulties;
     svg.replaceChildren();
     if (samples.length < 2) return;
     const width = svg.clientWidth || 800;
@@ -825,9 +845,21 @@ const elevationChart = (() => {
     for (let d = 0; d <= length; d += xStep) {
       element("text", { x: x(d), y: height - 6, "text-anchor": "middle" }).textContent = `${d / 1000} km`;
     }
-    const line = samples.map((s, i) => `${i ? "L" : "M"}${x(s[0]).toFixed(1)},${y(s[1]).toFixed(1)}`).join("");
-    element("path", { d: `${line}L${x(length)},${y(low)}L${x(0)},${y(low)}Z`, fill: color, "fill-opacity": 0.18 });
-    element("path", { d: line, fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round" });
+    // Runs of samples with the same grade (taken in the middle of each 50 m step), each in its colour
+    const runs = [];
+    for (let i = 0; i + 1 < samples.length; i++) {
+      const grade = gradeAt((samples[i][0] + samples[i + 1][0]) / 2);
+      const run = runs.at(-1);
+      if (run && run.grade === grade) run.last = i + 1;
+      else runs.push({ grade, first: i, last: i + 1 });
+    }
+    for (const { grade, first, last } of runs) {
+      const part = samples.slice(first, last + 1);
+      const line = part.map((s, i) => `${i ? "L" : "M"}${x(s[0]).toFixed(1)},${y(s[1]).toFixed(1)}`).join("");
+      const color = gradeColor(grade);
+      element("path", { d: `${line}L${x(part.at(-1)[0])},${y(low)}L${x(part[0][0])},${y(low)}Z`, fill: color, "fill-opacity": 0.25 });
+      element("path", { d: line, fill: "none", stroke: color, "stroke-width": 2.5, "stroke-linejoin": "round", "stroke-linecap": "round" });
+    }
     element("line", { class: "axis", x1: PAD.left, x2: width - PAD.right, y1: y(low), y2: y(low) });
     for (const w of waypoints) {
       element("line", { class: "waypoint-tick", x1: x(w.distance_m), x2: x(w.distance_m), y1: y(low), y2: y(low) + 5 });
@@ -847,9 +879,9 @@ const elevationChart = (() => {
     const { x, y, height, width } = scale;
     element("line", { class: "cursor", x1: x(d), x2: x(d), y1: PAD.top, y2: height - PAD.bottom }, layer);
     element("circle", { cx: x(d), cy: y(ele), r: 4, fill: "#ff5717", stroke: "#fff", "stroke-width": 2 }, layer);
-    const label = `${(d / 1000).toFixed(2)} km · ${Math.round(ele)} m`;
-    const labelX = Math.min(x(d) + 8, width - PAD.right - 120);
-    element("rect", { class: "readout-bg", x: labelX - 4, y: PAD.top, width: 120, height: 20, rx: 4 }, layer);
+    const label = `${(d / 1000).toFixed(2)} km · ${Math.round(ele)} m · ${gradeAt(d)}`;
+    const labelX = Math.min(x(d) + 8, width - PAD.right - 160);
+    element("rect", { class: "readout-bg", x: labelX - 4, y: PAD.top, width: 160, height: 20, rx: 4 }, layer);
     element("text", { class: "readout", x: labelX + 2, y: PAD.top + 14 }, layer).textContent = label;
   }
 

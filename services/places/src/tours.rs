@@ -78,6 +78,8 @@ pub struct Leg {
     pub route_ids: Vec<i64>,
     /// Hardest difficulty along it.
     pub difficulty: String,
+    /// The difficulty stretch by stretch, along `profile`'s distances.
+    pub grades: Vec<Graded>,
     /// Length in metres.
     pub length_m: f64,
     /// Climbing walking up.
@@ -92,6 +94,17 @@ pub struct Leg {
     pub max_ele: f64,
     /// Network edges used, with the metres walked on each (to find a different way down).
     used: Vec<(usize, f64)>,
+}
+
+/// A stretch with one difficulty (the hardest of the routes running along it).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Graded {
+    /// Where it starts, in metres from the start of the leg (or tour).
+    pub from_m: f64,
+    /// Where it ends.
+    pub to_m: f64,
+    /// CAI grade from OpenStreetMap (T, E, EE, EEA…) or "unknown".
+    pub difficulty: String,
 }
 
 /// How the tour comes back.
@@ -276,7 +289,7 @@ struct LegBuilder {
     profile: Vec<(f64, f64)>,
     via: Vec<String>,
     route_ids: Vec<i64>,
-    difficulties: Vec<String>,
+    grades: Vec<Graded>,
     used: Vec<(usize, f64)>,
 }
 
@@ -296,12 +309,14 @@ impl LegBuilder {
 
     fn add(&mut self, line: &[(f64, f64)], profile: &[(f64, f64)], edge: usize, network: &Network) {
         let metres = profile.last().map_or(0.0, |&(d, _)| d);
+        let from_m = self.profile.last().map_or(0.0, |&(d, _)| d);
         self.append(line, profile);
+        let to_m = self.profile.last().map_or(0.0, |&(d, _)| d);
         // A stretch of (almost) no length, where a way arrives at the target's own edge end,
         // walks none of that edge
         if metres >= 1.0 {
             self.used.push((edge, metres));
-            self.note_routes(network, edge);
+            self.note_routes(network, edge, from_m, to_m);
         }
     }
 
@@ -312,7 +327,7 @@ impl LegBuilder {
     }
 
     /// Follows the same route through shared stretches when it can, so "via" stays short.
-    fn note_routes(&mut self, network: &Network, edge: usize) {
+    fn note_routes(&mut self, network: &Network, edge: usize, from_m: f64, to_m: f64) {
         let routes = &network.edges[edge].routes;
         let current = self.route_ids.last().copied();
         // Keep following the current route; otherwise prefer a numbered CAI route over a
@@ -334,8 +349,15 @@ impl LegBuilder {
             .fold(None::<String>, |acc, d| {
                 Some(acc.map_or(d.to_owned(), |a| hardest(&a, d)))
             });
-        self.difficulties
-            .push(stretch.unwrap_or_else(|| "unknown".to_owned()));
+        let difficulty = stretch.unwrap_or_else(|| "unknown".to_owned());
+        match self.grades.last_mut() {
+            Some(last) if last.difficulty == difficulty => last.to_m = to_m,
+            _ => self.grades.push(Graded {
+                from_m,
+                to_m,
+                difficulty,
+            }),
+        }
     }
 
     fn finish(self) -> Option<Leg> {
@@ -343,10 +365,10 @@ impl LegBuilder {
         let elevations: Vec<f64> = self.profile.iter().map(|&(_, e)| e).collect();
         let (ascent_m, descent_m) = network::climb(&elevations);
         let difficulty = self
-            .difficulties
+            .grades
             .iter()
-            .fold(None::<String>, |acc, d| {
-                Some(acc.map_or(d.clone(), |a| hardest(&a, d)))
+            .fold(None::<String>, |acc, g| {
+                Some(acc.map_or(g.difficulty.clone(), |a| hardest(&a, &g.difficulty)))
             })
             .unwrap_or_else(|| "unknown".to_owned());
         Some(Leg {
@@ -355,6 +377,7 @@ impl LegBuilder {
             via: self.via,
             route_ids: self.route_ids,
             difficulty,
+            grades: self.grades,
             length_m,
             ascent_m,
             descent_m,
