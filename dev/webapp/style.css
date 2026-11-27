@@ -135,7 +135,10 @@ input[type="file"] { flex: 1; min-width: 0; }
 .legend span { display: inline-flex; align-items: center; gap: 0.3rem; margin-right: 0.4rem; }
 .legend span[style]::before { content: ""; width: 18px; height: 4px; border-radius: 2px; background: var(--c); }
 .legend .dashed::before { content: ""; width: 18px; border-top: 3px dashed #555; }
-.maplibregl-popup-content { font-size: 0.85rem; line-height: 1.4; }
+/* Popups have a white background in both themes: keep their text dark */
+.maplibregl-popup-content { font-size: 0.85rem; line-height: 1.4; color: #222; }
+.maplibregl-popup-content a { color: #c2410c; }
 .maplibregl-popup-content p { margin: 0.4rem 0 0; }
 .route-ref { background: #d7301f; color: #fff; border-radius: 3px; padding: 0 4px; font-size: 0.75rem; }
 .route-warning { color: #a15c00; }
+.route-note { color: #666; font-size: 0.75rem; }

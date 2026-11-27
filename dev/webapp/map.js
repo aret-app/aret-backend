@@ -58,7 +58,8 @@ const style = {
       maxzoom: 14,
       bounds: PILOT_BOUNDS,
       attribution:
-        'Routes © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap contributors</a> (ODbL)',
+        'Routes © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap contributors</a> (ODbL); ' +
+        'elevation <a href="https://doi.org/10.13127/tinitaly/1.1" target="_blank">TINITALY/INGV</a> (CC BY 4.0)',
     },
     pilot: {
       type: "geojson",
@@ -296,11 +297,29 @@ map.on("click", (event) => {
   const status = route.complete
     ? ""
     : '<p class="route-warning">⚠ Incomplete in OpenStreetMap: shown in pieces, gaps are not joined.</p>';
+  // Elevation (aret-maps#5). Missing when the route leaves the elevation model's area: vector tiles
+  // drop empty properties. A route is drawn from its lower end, so "up" starts in the valley.
+  const metres = (value) => Math.round(Number(value)).toLocaleString("en");
+  const climb =
+    route.ascent_m != null
+      ? `<br>↗ ${metres(route.ascent_m)} m · ↘ ${metres(route.descent_m)} m · highest ${metres(route.ele_max)} m`
+      : "";
+  const hours = (minutes) => {
+    const m = Number(minutes);
+    return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`;
+  };
+  const time =
+    route.duration_min != null
+      ? `<br>⏱ ~${hours(route.duration_min)} up · ~${hours(route.duration_reverse_min)} down ` +
+        '<span class="route-note">(estimate, no breaks)</span>'
+      : "";
   new Popup({ maxWidth: "280px" })
     .setLngLat(event.lngLat)
     .setHTML(
       `<strong>${escape(title)}</strong>${ref}<br>` +
         `${(route.length_m / 1000).toFixed(1)} km · ${difficulty}${route.network ? ` · ${escape(route.network)}` : ""}` +
+        climb +
+        time +
         status +
         `<p><a href="https://www.openstreetmap.org/relation/${Number(route.osm_id)}" target="_blank">View on OpenStreetMap</a></p>`,
     )
