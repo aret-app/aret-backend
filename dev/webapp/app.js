@@ -1,5 +1,5 @@
 // Aret test console: service status, Kratos accounts (browser flows) and API calls.
-import { resultColor, showRoutes, showSearchResults, showTrack } from "./map.js";
+import { TOUR_COLORS, clearTours, showRoutes, showTours, showTrack } from "./map.js";
 
 // Everything goes through the gateway (dev/gateway/Caddyfile):
 //   /kratos/*  → Ory Kratos public API      /api/<service>/*  → our Rust services
@@ -627,13 +627,17 @@ $("#show-routes").addEventListener("change", (event) => {
   $("#routes-legend").hidden = !event.currentTarget.checked;
 });
 
-// ---------------------------------------------------------------- find routes (places-svc)
+// ---------------------------------------------------------------- tours (places-svc)
 
 const PLACES = `${GATEWAY}/api/places`;
 const escapeHtml = (text) => String(text ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const hoursMinutes = (minutes) =>
-  minutes == null ? "—" : minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, "0")}`;
+  minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, "0")}`;
+// "CAI 9 → CAI 125 → CAI 126" reads better as "CAI 9 → 125 → 126"
+const ways = (via) =>
+  via.map((name, i) => (i > 0 && name.startsWith("CAI ") && via[i - 1].startsWith("CAI ") ? name.slice(4) : name)).join(" → ");
 let searchTimer = null;
+let shown = null; // { place, tours }
 
 function searchMessage(text, kind = "") {
   const element = $("#search-message");
@@ -662,34 +666,60 @@ async function findPlaces(query) {
     const item = document.createElement("li");
     const ele = place.ele != null ? ` · ${Math.round(place.ele)} m` : "";
     item.innerHTML = `<button type="button" class="ghost"><strong>${escapeHtml(place.name)}</strong> <small>${escapeHtml(place.type)}${ele}</small></button>`;
-    item.querySelector("button").addEventListener("click", () => findRoutes(place));
+    item.querySelector("button").addEventListener("click", () => findTours(place));
     list.append(item);
   }
 }
 
-async function findRoutes(place) {
+async function findTours(place) {
   $("#place-results").replaceChildren();
   $("#place-search").value = place.name;
-  const result = await call("GET", `${PLACES}/v1/routes?near=${encodeURIComponent(place.id)}`);
+  searchMessage("Finding tours…");
+  const result = await call("GET", `${PLACES}/v1/tours?to=${encodeURIComponent(place.id)}`);
   const list = $("#route-results");
   list.replaceChildren();
   if (!result.ok) return searchMessage(result.data?.detail ?? `Search failed (HTTP ${result.status}).`, "bad");
-  const routes = result.data.routes;
-  const reaching = routes.filter((route) => route.relation === "reaches").length;
+  const tours = result.data.tours;
+  shown = { place: result.data.place, tours };
+  $("#tours-clear").hidden = false;
   searchMessage(
-    `${place.name}: ${reaching} route${reaching === 1 ? "" : "s"} reach it, ${routes.length - reaching} nearby. ` +
-      `Data © OpenStreetMap contributors (ODbL), ${result.data.data.osm_data_at?.slice(0, 10) ?? ""}.`,
+    tours.length
+      ? `${tours.length} tour${tours.length === 1 ? "" : "s"} to ${place.name}, quickest first. ` +
+          `Data © OpenStreetMap contributors (ODbL), ${result.data.data.osm_data_at?.slice(0, 10) ?? ""}.`
+      : `No tour to ${place.name} from a car park or village on the marked trails.`,
   );
-  routes.forEach((route, index) => {
-    const title = route.name ?? (route.ref ? `CAI ${route.ref}` : `Route ${route.osm_id}`);
-    const climb = route.ascent_m != null ? ` · ↗ ${Math.round(route.ascent_m)} m` : "";
+  tours.forEach((tour, index) => {
     const item = document.createElement("li");
+    item.className = "tour";
+    const shape = tour.shape === "loop" ? "Loop" : "Out &amp; back";
+    const down = tour.shape === "loop" ? `<br><small>down: ${escapeHtml(ways(tour.via_down))}</small>` : "";
     item.innerHTML =
-      `<span class="swatch" style="background:${resultColor(index)}"></span>` +
-      `<strong>${escapeHtml(title)}</strong> <small>${route.relation === "reaches" ? "reaches it" : `${Math.round(route.distance_m)} m away`}</small><br>` +
-      `<small>${(route.length_m / 1000).toFixed(1)} km${climb} · ⏱ ${hoursMinutes(route.duration_min)} · ${escapeHtml(route.difficulty)}` +
-      `${route.complete ? "" : " · ⚠ incomplete"}</small>`;
+      `<button type="button" class="tour-card">` +
+      `<span class="tour-number" style="background:${TOUR_COLORS[index % TOUR_COLORS.length]}">${index + 1}</span>` +
+      `<span><strong>${escapeHtml(tour.title)}</strong> <span class="badge">${shape}</span><br>` +
+      `⏱ ${hoursMinutes(tour.duration_min)} · ${(tour.length_m / 1000).toFixed(1)} km · ↗ ${Math.round(tour.ascent_m)} m · ` +
+      `${escapeHtml(tour.difficulty)} · start ${Math.round(tour.start.ele)} m<br>` +
+      `<small>up: ${escapeHtml(ways(tour.via_up))}</small>${down}</span></button>`;
+    item.querySelector("button").addEventListener("click", () => selectTour(index));
     list.append(item);
   });
-  showSearchResults(place, routes, result.data.radius_m);
+  // The difficulty legend doesn't apply while only the tours are on the map
+  $("#routes-legend").hidden = true;
+  if (tours.length) showTours(shown.place, tours);
 }
+
+function selectTour(index) {
+  if (!shown) return;
+  document.querySelectorAll("#route-results .tour").forEach((item, i) => item.classList.toggle("selected", i === index));
+  showTours(shown.place, shown.tours, index);
+}
+
+$("#tours-clear").addEventListener("click", () => {
+  shown = null;
+  $("#route-results").replaceChildren();
+  $("#place-search").value = "";
+  $("#tours-clear").hidden = true;
+  searchMessage("");
+  $("#routes-legend").hidden = !$("#show-routes").checked;
+  clearTours($("#show-routes").checked);
+});

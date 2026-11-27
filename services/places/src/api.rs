@@ -6,6 +6,7 @@
 //!   (within 200 m) first, then routes nearby
 //! - `GET /v1/routes/{osm_id}`: one route with geometry and elevation profile
 //! - `GET /v1/routes/{osm_id}/gpx`: the route as GPX 1.1
+//! - `GET /v1/tours?to=<place id>`: ready-to-walk round trips to a place ([`crate::tours`])
 
 use aret_common::error::ApiError;
 use axum::Json;
@@ -376,4 +377,292 @@ fn gpx_bytes(title: &str, osm_id: i64, geometry: &Value) -> Result<Vec<u8>, Stri
     let mut bytes = Vec::new();
     gpx::write(&file, &mut bytes).map_err(|error| error.to_string())?;
     Ok(bytes)
+}
+
+/// Query of `GET /v1/tours`.
+#[derive(Debug, Deserialize)]
+pub struct ToursQuery {
+    /// The place to reach, e.g. `node/3140315349`.
+    pub to: String,
+    /// At most this many tours, 1–10 (default 6).
+    pub limit: Option<usize>,
+}
+
+/// `GET /v1/tours?to=`: round trips from a car park or village to the place and back, through the
+/// network of marked trails, with totals ([`crate::tours`]).
+pub async fn tours_to(
+    State(pool): State<PgPool>,
+    State(cache): State<std::sync::Arc<TourCache>>,
+    Query(query): Query<ToursQuery>,
+) -> Result<Json<Value>, ApiError> {
+    use crate::tours::{AccessKind, Shape};
+
+    let data = data_info(&pool).await?;
+    let place: Option<PlaceTarget> =
+        sqlx::query_as("SELECT ST_X(geom), ST_Y(geom), name, kind, ele FROM places WHERE id = $1")
+            .bind(&query.to)
+            .fetch_optional(&pool)
+            .await
+            .map_err(database_error)?;
+    let Some((lon, lat, name, kind, ele)) = place else {
+        return Err(ApiError::not_found("no such place"));
+    };
+    let index = cache.get(&pool).await?;
+    let limit = query.limit.unwrap_or(6).clamp(1, 10);
+    let place_name = name.clone().unwrap_or_else(|| "the place".to_owned());
+    let tours: Vec<Value> = crate::tours::tours(&index.network, &index.starts, (lon, lat), REACH_M, limit)
+        .into_iter()
+        .map(|tour| {
+            let mut lines = vec![rounded(&tour.up.line)];
+            let mut route_ids = tour.up.route_ids.clone();
+            // The way down: the loop's other way (walked backwards), or the way up again
+            let via_down: Vec<String> = match &tour.down {
+                Some(down) => {
+                    lines.push(rounded(&down.line.iter().rev().copied().collect::<Vec<_>>()));
+                    route_ids.extend(down.route_ids.iter().rev());
+                    down.via.iter().rev().cloned().collect()
+                }
+                None => tour.up.via.iter().rev().cloned().collect(),
+            };
+            json!({
+                "shape": match tour.shape { Shape::OutAndBack => "out_and_back", Shape::Loop => "loop" },
+                "title": format!("{place_name} from {}", tour.start.name),
+                "start": {
+                    "id": tour.start.id,
+                    "name": tour.start.name,
+                    "kind": match tour.start.kind { AccessKind::CarPark => "car_park", AccessKind::Village => "village" },
+                    "position": [tour.start.position.0, tour.start.position.1],
+                    "ele": tour.up.start_ele.round(),
+                },
+                "via_up": tour.up.via,
+                "via_down": via_down,
+                "route_ids": route_ids,
+                "length_m": tour.length_m.round(),
+                "ascent_m": tour.ascent_m.round(),
+                "descent_m": tour.descent_m.round(),
+                "duration_min": tour.duration_min,
+                "difficulty": tour.difficulty,
+                "ele_max": tour.max_ele.round(),
+                "geometry": { "type": "MultiLineString", "coordinates": lines },
+            })
+        })
+        .collect();
+    Ok(Json(json!({
+        "place": { "id": query.to, "name": name, "kind": kind, "ele": ele, "position": [lon, lat] },
+        "tours": tours,
+        "data": data,
+    })))
+}
+
+/// longitude, latitude, name, kind, elevation of the place a tour goes to.
+type PlaceTarget = (f64, f64, Option<String>, String, Option<f64>);
+
+fn rounded(line: &[(f64, f64)]) -> Vec<[f64; 2]> {
+    let round = |v: f64| (v * 1e6).round() / 1e6;
+    line.iter()
+        .map(|&(lon, lat)| [round(lon), round(lat)])
+        .collect()
+}
+
+/// The trail network and the tour starts for one catalogue version, built on first use.
+pub struct TourIndex {
+    version: String,
+    /// Marked trails joined where they meet.
+    pub network: crate::network::Network,
+    /// Car parks and villages attached to the network.
+    pub starts: Vec<crate::tours::Access>,
+}
+
+/// Keeps the [`TourIndex`] of the loaded catalogue; rebuilt when a new catalogue is loaded.
+#[derive(Default)]
+pub struct TourCache {
+    index: tokio::sync::Mutex<Option<std::sync::Arc<TourIndex>>>,
+}
+
+/// Car parks attach to a junction or route end within this distance; villages within the second.
+const CAR_PARK_REACH_M: f64 = 300.0;
+const VILLAGE_REACH_M: f64 = 800.0;
+
+impl TourCache {
+    /// Keeps the network built for the loaded catalogue: checks every `interval` (cheap when it's
+    /// current), so the ~10 s build after a new catalogue never falls on a user's request.
+    pub async fn keep_warm(&self, pool: PgPool, interval: std::time::Duration) {
+        loop {
+            let loaded: Option<bool> = sqlx::query_scalar("SELECT true FROM catalogue")
+                .fetch_optional(&pool)
+                .await
+                .ok()
+                .flatten();
+            if loaded.is_some() && self.get(&pool).await.is_err() {
+                tracing::warn!("building the trail network failed; retrying later");
+            }
+            tokio::time::sleep(interval).await;
+        }
+    }
+
+    async fn get(&self, pool: &PgPool) -> Result<std::sync::Arc<TourIndex>, ApiError> {
+        let version: String =
+            sqlx::query_scalar("SELECT routes_sha256 || places_sha256 FROM catalogue")
+                .fetch_one(pool)
+                .await
+                .map_err(database_error)?;
+        let mut slot = self.index.lock().await;
+        if let Some(index) = slot.as_ref().filter(|index| index.version == version) {
+            return Ok(std::sync::Arc::clone(index));
+        }
+        let index = std::sync::Arc::new(build_index(pool, version).await.map_err(database_error)?);
+        *slot = Some(std::sync::Arc::clone(&index));
+        Ok(index)
+    }
+}
+
+/// Route lines and profiles, car parks and villages from the database, as a [`TourIndex`].
+async fn build_index(pool: &PgPool, version: String) -> Result<TourIndex, sqlx::Error> {
+    use crate::network::{Network, RouteInput};
+    use crate::tours::{Access, AccessKind};
+
+    let fetched = std::time::Instant::now();
+    let rows: Vec<RouteRow> = sqlx::query_as(
+        "SELECT osm_id, name, ref, difficulty, ST_AsGeoJSON(geom, 7)::jsonb, profiles FROM routes \
+         WHERE profiles IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await?;
+    let places: Vec<(String, Option<String>, String, f64, f64)> = sqlx::query_as(
+        "SELECT id, name, kind, ST_X(geom), ST_Y(geom) FROM places \
+         WHERE kind = 'trailhead' OR (kind IN ('settlement', 'peak', 'pass', 'hut') AND searchable)",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    tracing::info!(
+        seconds = fetched.elapsed().as_secs_f64(),
+        "routes and places read for the network"
+    );
+    let loaded = std::time::Instant::now();
+    let index = tokio::task::spawn_blocking(move || {
+        let routes: Vec<RouteInput> = rows
+            .into_iter()
+            .filter_map(
+                |(osm_id, name, reference, difficulty, geometry, profiles)| {
+                    let lines: Vec<Vec<(f64, f64)>> = geometry["coordinates"]
+                        .as_array()?
+                        .iter()
+                        .map(pairs)
+                        .collect::<Option<_>>()?;
+                    let profiles: Vec<Vec<(f64, f64)>> = profiles?
+                        .as_array()?
+                        .iter()
+                        .map(pairs)
+                        .collect::<Option<_>>()?;
+                    let label = match (&reference, &name) {
+                        (Some(r), _) => format!("CAI {r}"),
+                        (None, Some(n)) => n.clone(),
+                        (None, None) => format!("route {osm_id}"),
+                    };
+                    Some(RouteInput {
+                        osm_id,
+                        label,
+                        difficulty,
+                        lines,
+                        profiles,
+                    })
+                },
+            )
+            .collect();
+        let built = std::time::Instant::now();
+        let network = Network::build(&routes);
+        tracing::info!(
+            seconds = built.elapsed().as_secs_f64(),
+            "network graph built"
+        );
+
+        // Names for unnamed car parks: the closest village (within 3 km) or named peak, pass or
+        // hut (within 800 m), e.g. "car park near Piglionico"
+        let landmarks: Vec<(&str, f64, (f64, f64))> = places
+            .iter()
+            .filter(|(_, name, kind, _, _)| kind != "trailhead" && name.is_some())
+            .map(|(_, name, kind, lon, lat)| {
+                let within = if kind == "settlement" { 3_000.0 } else { 800.0 };
+                (name.as_deref().unwrap_or_default(), within, (*lon, *lat))
+            })
+            .collect();
+        // A quick flat-earth distance is plenty to pick a name (thousands of car parks × places)
+        let approx_m = |a: (f64, f64), b: (f64, f64)| {
+            let dx = (a.0 - b.0) * 111_320.0 * a.1.to_radians().cos();
+            let dy = (a.1 - b.1) * 110_540.0;
+            (dx * dx + dy * dy).sqrt()
+        };
+        let near_village = |point: (f64, f64)| {
+            landmarks
+                .iter()
+                .filter(|&&(_, _, at)| {
+                    (at.0 - point.0).abs() < 0.05 && (at.1 - point.1).abs() < 0.03
+                })
+                .map(|&(name, within, at)| (name, within, approx_m(point, at)))
+                .filter(|&(_, within, d)| d <= within)
+                .min_by(|a, b| a.2.total_cmp(&b.2))
+                .map(|(name, _, _)| name.to_owned())
+        };
+        let starts: Vec<Access> = places
+            .iter()
+            .filter(|(_, _, kind, _, _)| kind == "trailhead" || kind == "settlement")
+            .filter_map(|(id, name, kind, lon, lat)| {
+                let position = (*lon, *lat);
+                let (access_kind, reach) = if kind == "trailhead" {
+                    (AccessKind::CarPark, CAR_PARK_REACH_M)
+                } else {
+                    (AccessKind::Village, VILLAGE_REACH_M)
+                };
+                let (node, _) = network.nearest_node(position, reach)?;
+                let name = match (name, access_kind) {
+                    (Some(name), _) => name.clone(),
+                    (None, AccessKind::CarPark) => near_village(position)
+                        .map_or_else(|| "a car park".to_owned(), |v| format!("car park near {v}")),
+                    (None, AccessKind::Village) => return None,
+                };
+                Some(Access {
+                    id: id.clone(),
+                    name,
+                    kind: access_kind,
+                    position,
+                    node,
+                })
+            })
+            .collect();
+        TourIndex {
+            version,
+            network,
+            starts,
+        }
+    })
+    .await
+    .map_err(|error| sqlx::Error::Protocol(format!("building the trail network: {error}")))?;
+    tracing::info!(
+        nodes = index.network.nodes.len(),
+        edges = index.network.edges.len(),
+        starts = index.starts.len(),
+        seconds = loaded.elapsed().as_secs_f64(),
+        "trail network built"
+    );
+    Ok(index)
+}
+
+/// osm_id, name, ref, difficulty, geometry (GeoJSON), profiles.
+type RouteRow = (
+    i64,
+    Option<String>,
+    Option<String>,
+    String,
+    Value,
+    Option<Value>,
+);
+
+/// `[[a, b], …]` as pairs, or `None` if malformed.
+fn pairs(value: &Value) -> Option<Vec<(f64, f64)>> {
+    value
+        .as_array()?
+        .iter()
+        .map(|pair| Some((pair.get(0)?.as_f64()?, pair.get(1)?.as_f64()?)))
+        .collect()
 }

@@ -326,75 +326,112 @@ map.on("click", (event) => {
     .addTo(map);
 });
 
-// ---- search results (places-svc, aret-backend#24)
+// ---- tours (places-svc, aret-backend#24)
 
-/** One colour per found route (the first 12; the rest are grey, as repeated colours would mislead). */
-export const RESULT_COLORS = [
-  "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6", "#9a6324",
-  "#469990", "#808000", "#000075", "#e6beff",
-];
+/** One colour per tour. */
+export const TOUR_COLORS = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#00a3a3", "#f032e6", "#9a6324", "#808000", "#000075"];
+const BASE_ROUTE_LAYERS = ["routes", "routes-incomplete", "route-refs", "route-selected"];
 
-/** Colour of the `index`-th search result. */
-export function resultColor(index) {
-  return RESULT_COLORS[index] ?? "#9aa1a8";
+function boundsOf(coordinates) {
+  const lons = coordinates.map((c) => c[0]);
+  const lats = coordinates.map((c) => c[1]);
+  return [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]];
+}
+
+async function ensureTourLayers() {
+  await mapReady;
+  if (map.getSource("tours")) return;
+  const empty = { type: "FeatureCollection", features: [] };
+  map.addSource("tours", {
+    type: "geojson",
+    data: empty,
+    // Tours come from OSM routes and their times from TINITALY elevation: both must be credited
+    attribution:
+      'Tours © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap contributors</a> (ODbL); ' +
+      'elevation <a href="https://doi.org/10.13127/tinitaly/1.1" target="_blank">TINITALY/INGV</a> (CC BY 4.0)',
+  });
+  map.addSource("tour-starts", { type: "geojson", data: empty });
+  map.addSource("tour-place", { type: "geojson", data: empty });
+  map.addLayer({
+    id: "tours-casing",
+    type: "line",
+    source: "tours",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#ffffff", "line-width": ["case", ["get", "selected"], 9, 6], "line-opacity": ["get", "opacity"] },
+  });
+  map.addLayer({
+    id: "tours-line",
+    type: "line",
+    source: "tours",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: {
+      "line-color": ["get", "color"],
+      "line-width": ["case", ["get", "selected"], 5, 3.5],
+      "line-opacity": ["get", "opacity"],
+    },
+  });
+  map.addLayer({
+    id: "tour-starts",
+    type: "circle",
+    source: "tour-starts",
+    paint: { "circle-radius": 11, "circle-color": ["get", "color"], "circle-stroke-color": "#fff", "circle-stroke-width": 2, "circle-opacity": ["get", "opacity"], "circle-stroke-opacity": ["get", "opacity"] },
+  });
+  map.addLayer({
+    id: "tour-start-numbers",
+    type: "symbol",
+    source: "tour-starts",
+    layout: { "text-field": ["get", "number"], "text-font": FONT, "text-size": 12, "text-allow-overlap": true },
+    paint: { "text-color": "#ffffff", "text-opacity": ["get", "opacity"] },
+  });
+  map.addLayer({
+    id: "tour-place",
+    type: "circle",
+    source: "tour-place",
+    paint: { "circle-radius": 7, "circle-color": "#ffffff", "circle-stroke-color": "#111", "circle-stroke-width": 3 },
+  });
 }
 
 /**
- * Highlights `routes` (from GET /v1/routes) in their own colours, marks `place` and zooms to the
- * search radius around it (long routes may start far away); the other routes fade.
+ * Shows only `tours` (from GET /v1/tours) on the map: each in its colour with a numbered start,
+ * all other routes hidden. With `selected` (an index), that tour stands out and the map zooms to it.
  */
-export async function showSearchResults(place, routes, radiusM = 3000) {
-  await mapReady;
-  const ids = routes.map((route) => route.osm_id);
-  const colorById = ["match", ["get", "osm_id"]];
-  routes.forEach((route, index) => colorById.push(route.osm_id, resultColor(index)));
-  colorById.push("#888888");
-
-  if (!map.getLayer("search-routes")) {
-    map.addLayer({
-      id: "search-routes-casing",
-      type: "line",
-      source: "routes",
-      "source-layer": "routes",
-      filter: ["in", ["get", "osm_id"], ["literal", []]],
-      layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 9, 4, 15, 10] },
-    });
-    map.addLayer({
-      id: "search-routes",
-      type: "line",
-      source: "routes",
-      "source-layer": "routes",
-      filter: ["in", ["get", "osm_id"], ["literal", []]],
-      layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-width": ["interpolate", ["linear"], ["zoom"], 9, 2.5, 15, 6] },
-    });
-    map.addSource("search-place", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-    map.addLayer({
-      id: "search-place",
-      type: "circle",
-      source: "search-place",
-      paint: { "circle-radius": 7, "circle-color": "#ffffff", "circle-stroke-color": "#111", "circle-stroke-width": 3 },
-    });
-  }
-  const filter = ["in", ["get", "osm_id"], ["literal", ids]];
-  map.setFilter("search-routes", filter);
-  map.setFilter("search-routes-casing", filter);
-  map.setPaintProperty("search-routes", "line-color", colorById);
-  for (const layer of ROUTE_LAYERS) map.setPaintProperty(layer, "line-opacity", ids.length ? 0.25 : 0.85);
-
-  const point = place?.position;
-  map.getSource("search-place").setData({
+export async function showTours(place, tours, selected = null) {
+  await ensureTourLayers();
+  for (const layer of BASE_ROUTE_LAYERS) map.setLayoutProperty(layer, "visibility", "none");
+  const opacity = (index) => (selected === null || selected === index ? 1 : 0.25);
+  map.getSource("tours").setData({
     type: "FeatureCollection",
-    features: point ? [{ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: point } }] : [],
+    features: tours.map((tour, index) => ({
+      type: "Feature",
+      geometry: tour.geometry,
+      properties: { color: TOUR_COLORS[index % TOUR_COLORS.length], selected: selected === index, opacity: opacity(index) },
+    })),
   });
-  if (!point) return;
-  const dLat = radiusM / 111_320;
-  const dLon = dLat / Math.cos((point[1] * Math.PI) / 180);
-  map.fitBounds(
-    [[point[0] - dLon, point[1] - dLat], [point[0] + dLon, point[1] + dLat]],
-    { padding: 20, duration: 800 },
-  );
+  map.getSource("tour-starts").setData({
+    type: "FeatureCollection",
+    features: tours.map((tour, index) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: tour.start.position },
+      properties: { number: String(index + 1), color: TOUR_COLORS[index % TOUR_COLORS.length], opacity: opacity(index) },
+    })),
+  });
+  map.getSource("tour-place").setData({
+    type: "FeatureCollection",
+    features: [{ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: place.position } }],
+  });
+  const chosen = selected === null ? tours : [tours[selected]];
+  const points = [place.position, ...chosen.flatMap((tour) => tour.geometry.coordinates.flat())];
+  map.fitBounds(boundsOf(points), { padding: 50, maxZoom: 15, duration: 800 });
+}
+
+/** Removes the tours and brings the routes back (if `showRoutesAgain`). */
+export async function clearTours(showRoutesAgain) {
+  await ensureTourLayers();
+  const empty = { type: "FeatureCollection", features: [] };
+  for (const source of ["tours", "tour-starts", "tour-place"]) map.getSource(source).setData(empty);
+  for (const layer of BASE_ROUTE_LAYERS) {
+    map.setLayoutProperty(layer, "visibility", showRoutesAgain ? "visible" : "none");
+  }
 }
 
 /** Shows or hides the pre-built routes. */

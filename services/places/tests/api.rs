@@ -28,7 +28,7 @@ async fn loaded_db() -> Option<TestDb> {
 }
 
 async fn get(pool: &PgPool, uri: &str) -> (StatusCode, Vec<u8>) {
-    let router: Router = aret_places::router(pool.clone());
+    let router: Router = aret_places::router(aret_places::AppState::new(pool.clone()));
     let request = Request::get(uri)
         .body(Body::empty())
         .expect("valid request");
@@ -228,5 +228,55 @@ async fn a_bad_download_keeps_the_loaded_catalogue() {
         "Pania della Croce",
         "old catalogue still served"
     );
+    db.drop_database().await;
+}
+
+#[tokio::test]
+async fn tours_start_at_car_parks_or_villages_and_go_up_and_back() {
+    let Some(db) = loaded_db().await else { return };
+    let (status, body) = get_json(&db.pool, "/v1/tours?to=node/3140315349").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["place"]["name"], "Pania della Croce");
+    assert_eq!(body["data"]["license"], "ODbL-1.0");
+    let tours = body["tours"].as_array().expect("tours");
+    assert!(
+        !tours.is_empty(),
+        "the test area has car parks and villages below the summit"
+    );
+    for tour in tours {
+        let kind = tour["start"]["kind"].as_str().unwrap_or_default();
+        assert!(kind == "car_park" || kind == "village", "start {kind}");
+        assert!(
+            tour["start"]["name"]
+                .as_str()
+                .is_some_and(|n| !n.is_empty())
+        );
+        assert!(
+            tour["title"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("Pania della Croce from "))
+        );
+        let shape = tour["shape"].as_str().unwrap_or_default();
+        assert!(shape == "out_and_back" || shape == "loop");
+        assert!(tour["via_up"].as_array().is_some_and(|v| !v.is_empty()));
+        assert!(tour["via_down"].as_array().is_some_and(|v| !v.is_empty()));
+        assert!(tour["duration_min"].as_u64().is_some_and(|m| m > 0));
+        assert!(tour["ascent_m"].as_f64().is_some_and(|a| a > 0.0));
+        // The summit is higher than the start
+        assert!(tour["ele_max"].as_f64() > tour["start"]["ele"].as_f64());
+        let lines = tour["geometry"]["coordinates"]
+            .as_array()
+            .expect("geometry");
+        assert_eq!(lines.len(), if shape == "loop" { 2 } else { 1 });
+    }
+    // Quickest first
+    let times: Vec<u64> = tours
+        .iter()
+        .filter_map(|t| t["duration_min"].as_u64())
+        .collect();
+    assert!(times.windows(2).all(|w| w[0] <= w[1]), "{times:?}");
+
+    let (status, _) = get_json(&db.pool, "/v1/tours?to=node/1").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     db.drop_database().await;
 }

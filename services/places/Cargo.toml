@@ -12,6 +12,7 @@ publish.workspace = true
 aret-common.workspace = true
 axum.workspace = true
 flate2.workspace = true
+geo.workspace = true
 geo-types.workspace = true
 gpx.workspace = true
 # HTTPS: the catalogue is downloaded from Cloudflare Pages

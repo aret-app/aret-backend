@@ -97,8 +97,8 @@ edit a file and reload the page.
   without a JWT → 401
 - **My tracks:** upload a GPX (try the synthetic `services/tracks/tests/fixtures/sample.gpx`), list your
   tracks, click one to draw it on the map, download it as GPX
-- **Find routes:** search a place (typos are fine), pick it, see the routes that reach it in their own
-  colours on the map, with length, climb and time
+- **Find tours:** search a place (typos are fine), pick it, see ready-to-walk tours from car parks and
+  villages as cards; only those tours are on the map, and picking one focuses it
 - **Map:** the pilot tiles from `aret-tiles.pages.dev` with a first outdoor style (MapLibre GL JS 6), plus
   the **pre-built routes** (OpenStreetMap hiking relations, aret-app/aret-maps#4, rebuilt weekly): colour =
   difficulty (T, E, EE, EEA, unknown), dashed = incomplete (gaps never joined), CAI numbers along the
@@ -192,6 +192,7 @@ login** (reference data, ODbL); every answer has `data.attribution`, `data.licen
 | `GET /v1/routes?near=node/3140315349` (or `?lat=&lon=`, `&radius_m=`) | Routes that **reach** the place (≤ 200 m) first, then routes **nearby** (default 3 km, at most 10 km); each with length, ascent, descent, highest point, walking time, difficulty, `complete`, start point |
 | `GET /v1/routes/{osm_id}` | One route: all fields, GeoJSON geometry, elevation profiles |
 | `GET /v1/routes/{osm_id}/gpx` | The route as GPX 1.1 (one segment per line; gaps stay gaps), with the OpenStreetMap credit |
+| `GET /v1/tours?to=<place id>&limit=` | **Ready-to-walk tours**: round trips from a car park or village to the place and back, quickest first (below) |
 
 **Data:** aret-maps publishes the catalogue weekly (`https://aret-tiles.pages.dev/catalogue/`: gzip
 GeoJSON + `version.json`). places-svc checks it at start and every 6 hours; a new build is downloaded,
@@ -200,8 +201,34 @@ half a catalogue and a bad download keeps the old one. Until the first load, sea
 `PLACES_CATALOGUE` can also be a local folder, e.g. `aret-maps/out/catalogue` mounted into the container.
 The full pilot catalogue (3,500 routes, 22,000 places) loads in under a minute.
 
-The test console's **Find routes** box uses it: type a place, pick it, and the routes appear on the map in
-their own colours with a comparison list.
+### Tours
+What a hiker wants after searching "Monte Sagro": a few complete outings, not the trail network.
+- **Trail network:** all routes, joined **only where they really share a point**: the same OSM node,
+  where paths branch or a route ends. A route ending 40 m from another stays unconnected, so a tour
+  never bridges a gap. Shared stretches count once.
+- **Starts:** car parks and trailheads within 300 m of a junction or route end, villages within 800 m.
+  An unnamed car park is named after the closest village (3 km) or named peak, pass or hut (800 m), e.g.
+  "car park near Foce del Piglionico".
+- **Way up:** the least walking effort through the network, up to about 6 hours one way.
+- **Loop:** a second search avoids the way up. If it shares at most 30% of it and takes at most 1.5×
+  as long, the tour goes up one way and down the other; otherwise it's an out-and-back.
+- **Totals:** distance, climbing and DIN 33466 time per direction. Difficulty is the hardest along the
+  way, "unknown" if any stretch is unknown. Up to 6 tours from starts at least 1 km apart.
+- **Answer:** title, `shape` (`loop`/`out_and_back`), `start` (name, kind, position, elevation),
+  `via_up`/`via_down` (route labels), totals, and `geometry` (just the walked part).
+
+The network (about 10,000 junctions for the pilot region) is built **in the background** within
+15 seconds of a new catalogue, in about 10 s; tours then take ~100 ms.
+
+**Coverage follows OpenStreetMap's route relations** (ADR-0015). A marked trail drawn only as paths,
+without its relation, is invisible to the network. Example: CAI 7 from Piglionico to Rifugio Rossi isn't a
+relation, so the classic Pania della Croce outing is missing. Adding the relation in OSM fixes it at the
+next weekly build. Routing over every path (ADR-0006) comes later, with "design your own route".
+
+The test console's **Find tours** box uses it: type a place, pick it, and see its tours as cards (time,
+distance, climb, difficulty, routes up and down). **Only the tours are on the map**, numbered from their
+start; pick one to focus it, and Clear brings the map back. `GET /v1/routes?near=` (the whole network
+around a place) stays for the later "design your own route" mode.
 
 ## Account deletion (GDPR right to erasure)
 `DELETE /v1/account` on aret-identity (aret-backend#13); the test console has a **Delete my account** button.

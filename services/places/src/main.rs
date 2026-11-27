@@ -34,7 +34,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         UPDATE_INTERVAL,
     ));
 
-    let app = server::base_router(&config).merge(aret_places::router(pool));
+    // Build the tours' trail network as soon as a catalogue is there, not on a user's request
+    let state = aret_places::AppState::new(pool.clone());
+    let tours = std::sync::Arc::clone(&state.tours);
+    tokio::spawn(async move { tours.keep_warm(pool, Duration::from_secs(15)).await });
+
+    let app = server::base_router(&config).merge(aret_places::router(state));
     server::serve(app, &config).await?;
     Ok(())
 }
