@@ -128,3 +128,14 @@ input[type="file"] { flex: 1; min-width: 0; }
 .log { margin: 0; padding-left: 28px; max-height: 220px; overflow: auto; color: var(--muted); }
 .log .ok { color: var(--ok); }
 .log .bad { color: var(--bad); }
+
+/* Pre-built routes on the map */
+.toggle { font-size: 0.9rem; display: flex; gap: 0.4rem; align-items: center; }
+.legend { font-size: 0.85rem; color: var(--muted, #666); margin: 0.5rem 0 0; line-height: 1.8; }
+.legend span { display: inline-flex; align-items: center; gap: 0.3rem; margin-right: 0.4rem; }
+.legend span[style]::before { content: ""; width: 18px; height: 4px; border-radius: 2px; background: var(--c); }
+.legend .dashed::before { content: ""; width: 18px; border-top: 3px dashed #555; }
+.maplibregl-popup-content { font-size: 0.85rem; line-height: 1.4; }
+.maplibregl-popup-content p { margin: 0.4rem 0 0; }
+.route-ref { background: #d7301f; color: #fff; border-radius: 3px; padding: 0 4px; font-size: 0.75rem; }
+.route-warning { color: #a15c00; }
