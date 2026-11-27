@@ -182,6 +182,34 @@
       </p>
     </section>
 
+    <section class="card tour-detail-card" id="tour-detail" hidden>
+      <div class="card-head">
+        <h2 id="tour-detail-title">Tour</h2>
+        <a id="tour-gpx" class="button ghost" href="#">Download GPX</a>
+      </div>
+      <p id="tour-stats" class="tour-stats"></p>
+      <p id="tour-grade" class="tour-grade"></p>
+      <p id="tour-description"></p>
+      <figure class="elevation">
+        <svg id="elevation-chart" role="img" aria-label="Elevation profile"></svg>
+        <figcaption class="hint">Elevation along the tour (TINITALY/INGV, CC BY 4.0). Move over the chart to
+          see the spot on the map.</figcaption>
+      </figure>
+      <div class="tour-columns">
+        <div>
+          <h3>Climbs and descents</h3>
+          <table class="tracks" id="tour-slopes">
+            <thead><tr><th></th><th>From</th><th>Length</th><th>Change</th><th>Average</th><th>Steepest</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div>
+          <h3>Along the way</h3>
+          <ol id="tour-waypoints" class="waypoints"></ol>
+        </div>
+      </div>
+    </section>
+
     <section class="card log-card">
       <div class="card-head">
         <h2>Requests</h2>

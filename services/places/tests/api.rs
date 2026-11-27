@@ -280,3 +280,77 @@ async fn tours_start_at_car_parks_or_villages_and_go_up_and_back() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     db.drop_database().await;
 }
+
+#[tokio::test]
+async fn a_tour_detail_has_a_profile_to_hover_and_a_gpx() {
+    let Some(db) = loaded_db().await else { return };
+    let (_, list) = get_json(&db.pool, "/v1/tours?to=node/3140315349").await;
+    let first = &list["tours"][0];
+    let from = first["start"]["id"].as_str().expect("a start");
+    assert_eq!(first["id"], format!("node/3140315349~{from}"));
+
+    let uri = format!("/v1/tours/detail?to=node/3140315349&from={from}");
+    let (status, body) = get_json(&db.pool, &uri).await;
+    assert_eq!(status, StatusCode::OK);
+    let tour = &body["tour"];
+    // The same tour as in the list
+    for key in ["id", "title", "length_m", "duration_min", "geometry"] {
+        assert_eq!(tour[key], first[key], "{key}");
+    }
+    assert!(
+        tour["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("check the weather"))
+    );
+    assert!(
+        tour["grade"]["meaning"]
+            .as_str()
+            .is_some_and(|m| !m.is_empty())
+    );
+
+    // Samples every 50 m over the whole round trip, each with its position on the map
+    let samples = tour["profile"]["samples"].as_array().expect("samples");
+    let length = tour["length_m"].as_f64().expect("length");
+    assert!(
+        samples.len() as f64 >= length / 50.0 * 0.95,
+        "{} samples",
+        samples.len()
+    );
+    let last = samples.last().and_then(Value::as_array).expect("a sample");
+    assert!((last[0].as_f64().expect("distance") - length).abs() < length * 0.02);
+    for sample in samples {
+        let [distance, ele, lon, lat] = sample.as_array().expect("array").as_slice() else {
+            panic!("4 columns: {sample}");
+        };
+        assert!(distance.is_f64() && ele.is_f64());
+        assert!((10.2..10.5).contains(&lon.as_f64().expect("lon")));
+        assert!((43.9..44.2).contains(&lat.as_f64().expect("lat")));
+    }
+    // The highest point is the summit, reached on the way
+    assert!(tour["highest"]["ele"].as_f64() >= tour["lowest"]["ele"].as_f64());
+    assert!(tour["climbs"].as_array().is_some_and(|c| !c.is_empty()));
+    let waypoints = tour["waypoints"].as_array().expect("waypoints");
+    assert!(
+        waypoints.iter().any(|w| w["name"] == "Pania della Croce"),
+        "the summit is passed: {waypoints:?}"
+    );
+    let distances: Vec<f64> = waypoints
+        .iter()
+        .filter_map(|w| w["distance_m"].as_f64())
+        .collect();
+    assert!(distances.windows(2).all(|w| w[0] <= w[1]), "in order");
+
+    let (status, gpx) = get(
+        &db.pool,
+        &format!("/v1/tours/gpx?to=node/3140315349&from={from}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(gpx).expect("UTF-8");
+    assert!(text.contains("<trkpt") && text.contains("<ele>") && text.contains("<wpt"));
+    assert!(text.contains("OpenStreetMap contributors"));
+
+    let (status, _) = get_json(&db.pool, "/v1/tours/detail?to=node/3140315349&from=node/1").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    db.drop_database().await;
+}

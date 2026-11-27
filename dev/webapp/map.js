@@ -424,11 +424,57 @@ export async function showTours(place, tours, selected = null) {
   map.fitBounds(boundsOf(points), { padding: 50, maxZoom: 15, duration: 800 });
 }
 
+async function ensureDetailLayers() {
+  await ensureTourLayers();
+  if (map.getSource("tour-waypoints")) return;
+  const empty = { type: "FeatureCollection", features: [] };
+  map.addSource("tour-waypoints", { type: "geojson", data: empty });
+  map.addSource("tour-hover", { type: "geojson", data: empty });
+  map.addLayer({
+    id: "tour-waypoints",
+    type: "circle",
+    source: "tour-waypoints",
+    paint: { "circle-radius": 4, "circle-color": "#ffffff", "circle-stroke-color": "#333", "circle-stroke-width": 1.5 },
+  });
+  map.addLayer({
+    id: "tour-waypoint-names",
+    type: "symbol",
+    source: "tour-waypoints",
+    layout: { "text-field": ["get", "name"], "text-font": FONT, "text-size": 11, "text-offset": [0, 1.1], "text-anchor": "top", "text-optional": true },
+    paint: { "text-color": "#222", "text-halo-color": "#fff", "text-halo-width": 1.5 },
+  });
+  map.addLayer({
+    id: "tour-hover",
+    type: "circle",
+    source: "tour-hover",
+    paint: { "circle-radius": 8, "circle-color": "#ff5717", "circle-stroke-color": "#fff", "circle-stroke-width": 3 },
+  });
+}
+
+/** Marks the places a tour passes (from GET /v1/tours/detail). */
+export async function showWaypoints(waypoints) {
+  await ensureDetailLayers();
+  map.getSource("tour-waypoints").setData({
+    type: "FeatureCollection",
+    features: waypoints.map((w) => ({ type: "Feature", properties: { name: w.name }, geometry: { type: "Point", coordinates: w.position } })),
+  });
+}
+
+/** Moves the hover marker to `position` ([lon, lat]), or hides it (null). Called on every mouse move. */
+export function markTourPoint(position) {
+  const source = map.getSource("tour-hover");
+  if (!source) return;
+  source.setData({
+    type: "FeatureCollection",
+    features: position ? [{ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: position } }] : [],
+  });
+}
+
 /** Removes the tours and brings the routes back (if `showRoutesAgain`). */
 export async function clearTours(showRoutesAgain) {
-  await ensureTourLayers();
+  await ensureDetailLayers();
   const empty = { type: "FeatureCollection", features: [] };
-  for (const source of ["tours", "tour-starts", "tour-place"]) map.getSource(source).setData(empty);
+  for (const source of ["tours", "tour-starts", "tour-place", "tour-waypoints", "tour-hover"]) map.getSource(source).setData(empty);
   for (const layer of BASE_ROUTE_LAYERS) {
     map.setLayoutProperty(layer, "visibility", showRoutesAgain ? "visible" : "none");
   }

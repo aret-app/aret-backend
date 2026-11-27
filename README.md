@@ -98,7 +98,8 @@ edit a file and reload the page.
 - **My tracks:** upload a GPX (try the synthetic `services/tracks/tests/fixtures/sample.gpx`), list your
   tracks, click one to draw it on the map, download it as GPX
 - **Find tours:** search a place (typos are fine), pick it, see ready-to-walk tours from car parks and
-  villages as cards; only those tours are on the map, and picking one focuses it
+  villages as cards; only those tours are on the map, and picking one focuses it and opens its detail
+  card: elevation chart (move over it to see the spot on the map), climbs, places along the way, GPX
 - **Map:** the pilot tiles from `aret-tiles.pages.dev` with a first outdoor style (MapLibre GL JS 6), plus
   the **pre-built routes** (OpenStreetMap hiking relations, aret-app/aret-maps#4, rebuilt weekly): colour =
   difficulty (T, E, EE, EEA, unknown), dashed = incomplete (gaps never joined), CAI numbers along the
@@ -193,6 +194,8 @@ login** (reference data, ODbL); every answer has `data.attribution`, `data.licen
 | `GET /v1/routes/{osm_id}` | One route: all fields, GeoJSON geometry, elevation profiles |
 | `GET /v1/routes/{osm_id}/gpx` | The route as GPX 1.1 (one segment per line; gaps stay gaps), with the OpenStreetMap credit |
 | `GET /v1/tours?to=<place id>&limit=` | **Ready-to-walk tours**: round trips from a car park or village to the place and back, quickest first (below) |
+| `GET /v1/tours/detail?to=<place id>&from=<start id>` | One tour's **detail card** (below) |
+| `GET /v1/tours/gpx?to=<place id>&from=<start id>` | The tour as GPX 1.1: one track with elevations, the places passed as waypoints, the credits |
 
 **Data:** aret-maps publishes the catalogue weekly (`https://aret-tiles.pages.dev/catalogue/`: gzip
 GeoJSON + `version.json`). places-svc checks it at start and every 6 hours; a new build is downloaded,
@@ -209,13 +212,21 @@ What a hiker wants after searching "Monte Sagro": a few complete outings, not th
 - **Starts:** car parks and trailheads within 300 m of a junction or route end, villages within 800 m.
   An unnamed car park is named after the closest village (3 km) or named peak, pass or hut (800 m), e.g.
   "car park near Foce del Piglionico".
-- **Way up:** the least walking effort through the network, up to about 6 hours one way.
+- **Way up:** the least walking effort through the network, up to 9 hours of effort one way.
 - **Loop:** a second search avoids the way up. If it shares at most 30% of it and takes at most 1.5×
   as long, the tour goes up one way and down the other; otherwise it's an out-and-back.
 - **Totals:** distance, climbing and DIN 33466 time per direction. Difficulty is the hardest along the
   way, "unknown" if any stretch is unknown. Up to 6 tours from starts at least 1 km apart.
-- **Answer:** title, `shape` (`loop`/`out_and_back`), `start` (name, kind, position, elevation),
-  `via_up`/`via_down` (route labels), totals, and `geometry` (just the walked part).
+- **Answer:** `id` (`<place>~<start>`), title, `shape` (`loop`/`out_and_back`), `start` (id, name, kind,
+  position, elevation), `via_up`/`via_down` (route labels), totals, and `geometry` (just the walked part).
+- **Detail card** (`/v1/tours/detail`): everything the app's tour card shows, so the app computes nothing:
+  the summary above plus a `description` (never says "safe"; always "check the weather and the trail"),
+  `grade` (code, name, what it means), `fitness`, `profile.samples` every 50 m as
+  `[distance_m, ele, lon, lat]` (**the position lets the app move a marker on the map while the user
+  moves along the elevation chart**), `highest`/`lowest` (elevation, distance, position), `climbs` and
+  `descents` of at least 100 m (from/to, change, average and steepest gradient over 100 m), `waypoints`
+  (peaks, passes, huts, villages and water within 75 m of the track, in order, with distance from the
+  start) and the `gpx` path. No social data (photos, ratings, comments): there is none yet.
 
 The network (about 10,000 junctions for the pilot region) is built **in the background** within
 15 seconds of a new catalogue, in about 10 s; tours then take ~100 ms.
@@ -227,7 +238,8 @@ next weekly build. Routing over every path (ADR-0006) comes later, with "design 
 
 The test console's **Find tours** box uses it: type a place, pick it, and see its tours as cards (time,
 distance, climb, difficulty, routes up and down). **Only the tours are on the map**, numbered from their
-start; pick one to focus it, and Clear brings the map back. `GET /v1/routes?near=` (the whole network
+start; pick one to focus it and open its detail card (elevation chart with a hover marker on the map,
+climbs and descents, places along the way, GPX download), and Clear brings the map back. `GET /v1/routes?near=` (the whole network
 around a place) stays for the later "design your own route" mode.
 
 ## Account deletion (GDPR right to erasure)

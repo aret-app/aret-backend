@@ -10,6 +10,7 @@
 pub mod api;
 pub mod catalogue;
 pub mod db;
+pub mod detail;
 pub mod network;
 pub mod tours;
 
@@ -59,5 +60,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/routes/{osm_id}", get(api::route_detail))
         .route("/v1/routes/{osm_id}/gpx", get(api::route_gpx))
         .route("/v1/tours", get(api::tours_to))
+        .route("/v1/tours/detail", get(api::tour_detail))
+        .route("/v1/tours/gpx", get(api::tour_gpx))
         .with_state(state)
 }

@@ -70,6 +70,8 @@ pub struct Access {
 pub struct Leg {
     /// Points from the start to the top.
     pub line: Vec<(f64, f64)>,
+    /// (distance from the start in metres, elevation in metres).
+    pub profile: Vec<(f64, f64)>,
     /// Routes followed, in order (e.g. "CAI 7", "CAI 126").
     pub via: Vec<String>,
     /// Their relation ids.
@@ -349,6 +351,7 @@ impl LegBuilder {
             .unwrap_or_else(|| "unknown".to_owned());
         Some(Leg {
             line: self.line,
+            profile: self.profile,
             via: self.via,
             route_ids: self.route_ids,
             difficulty,

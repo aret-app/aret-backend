@@ -7,6 +7,8 @@
 //! - `GET /v1/routes/{osm_id}`: one route with geometry and elevation profile
 //! - `GET /v1/routes/{osm_id}/gpx`: the route as GPX 1.1
 //! - `GET /v1/tours?to=<place id>`: ready-to-walk round trips to a place ([`crate::tours`])
+//! - `GET /v1/tours/detail?to=&from=`: one tour's detail card ([`crate::detail`])
+//! - `GET /v1/tours/gpx?to=&from=`: one tour as GPX 1.1
 
 use aret_common::error::ApiError;
 use axum::Json;
@@ -388,6 +390,96 @@ pub struct ToursQuery {
     pub limit: Option<usize>,
 }
 
+/// Query of `GET /v1/tours/detail` and `GET /v1/tours/gpx`: one tour, named by its place and start
+/// (the `to` and `start.id` of a tour in the list).
+#[derive(Debug, Deserialize)]
+pub struct TourQuery {
+    /// The place to reach, e.g. `node/3140315349`.
+    pub to: String,
+    /// The tour's start (car park or village), e.g. `way/123`.
+    pub from: String,
+}
+
+/// The tours to a place, with what the answers share.
+struct FoundTours {
+    place: Value,
+    place_name: String,
+    index: std::sync::Arc<TourIndex>,
+    tours: Vec<crate::tours::Tour>,
+    data: Value,
+}
+
+/// At most this many tours to a place.
+const MAX_TOURS: usize = 10;
+
+async fn find_tours(
+    pool: &PgPool,
+    cache: &TourCache,
+    to: &str,
+    limit: usize,
+) -> Result<FoundTours, ApiError> {
+    let data = data_info(pool).await?;
+    let place: Option<PlaceTarget> =
+        sqlx::query_as("SELECT ST_X(geom), ST_Y(geom), name, kind, ele FROM places WHERE id = $1")
+            .bind(to)
+            .fetch_optional(pool)
+            .await
+            .map_err(database_error)?;
+    let Some((lon, lat, name, kind, ele)) = place else {
+        return Err(ApiError::not_found("no such place"));
+    };
+    let index = cache.get(pool).await?;
+    let tours = crate::tours::tours(&index.network, &index.starts, (lon, lat), REACH_M, limit);
+    Ok(FoundTours {
+        place: json!({ "id": to, "name": name, "kind": kind, "ele": ele, "position": [lon, lat] }),
+        place_name: name.unwrap_or_else(|| "the place".to_owned()),
+        index,
+        tours,
+        data,
+    })
+}
+
+/// A tour's summary, as listed by `GET /v1/tours`.
+fn tour_summary(tour: &crate::tours::Tour, place_id: &str, place_name: &str) -> Value {
+    use crate::tours::{AccessKind, Shape};
+
+    let mut lines = vec![rounded(&tour.up.line)];
+    let mut route_ids = tour.up.route_ids.clone();
+    // The way down: the loop's other way (walked backwards), or the way up again
+    let via_down: Vec<String> = match &tour.down {
+        Some(down) => {
+            lines.push(rounded(
+                &down.line.iter().rev().copied().collect::<Vec<_>>(),
+            ));
+            route_ids.extend(down.route_ids.iter().rev());
+            down.via.iter().rev().cloned().collect()
+        }
+        None => tour.up.via.iter().rev().cloned().collect(),
+    };
+    json!({
+        "id": format!("{place_id}~{}", tour.start.id),
+        "shape": match tour.shape { Shape::OutAndBack => "out_and_back", Shape::Loop => "loop" },
+        "title": format!("{place_name} from {}", tour.start.name),
+        "start": {
+            "id": tour.start.id,
+            "name": tour.start.name,
+            "kind": match tour.start.kind { AccessKind::CarPark => "car_park", AccessKind::Village => "village" },
+            "position": [tour.start.position.0, tour.start.position.1],
+            "ele": tour.up.start_ele.round(),
+        },
+        "via_up": tour.up.via,
+        "via_down": via_down,
+        "route_ids": route_ids,
+        "length_m": tour.length_m.round(),
+        "ascent_m": tour.ascent_m.round(),
+        "descent_m": tour.descent_m.round(),
+        "duration_min": tour.duration_min,
+        "difficulty": tour.difficulty,
+        "ele_max": tour.max_ele.round(),
+        "geometry": { "type": "MultiLineString", "coordinates": lines },
+    })
+}
+
 /// `GET /v1/tours?to=`: round trips from a car park or village to the place and back, through the
 /// network of marked trails, with totals ([`crate::tours`]).
 pub async fn tours_to(
@@ -395,63 +487,194 @@ pub async fn tours_to(
     State(cache): State<std::sync::Arc<TourCache>>,
     Query(query): Query<ToursQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    use crate::tours::{AccessKind, Shape};
+    let limit = query.limit.unwrap_or(6).clamp(1, MAX_TOURS);
+    let found = find_tours(&pool, &cache, &query.to, limit).await?;
+    let tours: Vec<Value> = found
+        .tours
+        .iter()
+        .map(|tour| tour_summary(tour, &query.to, &found.place_name))
+        .collect();
+    Ok(Json(json!({
+        "place": found.place,
+        "tours": tours,
+        "data": found.data,
+    })))
+}
 
-    let data = data_info(&pool).await?;
-    let place: Option<PlaceTarget> =
-        sqlx::query_as("SELECT ST_X(geom), ST_Y(geom), name, kind, ele FROM places WHERE id = $1")
-            .bind(&query.to)
-            .fetch_optional(&pool)
-            .await
-            .map_err(database_error)?;
-    let Some((lon, lat, name, kind, ele)) = place else {
-        return Err(ApiError::not_found("no such place"));
+/// The tour from `from` to `to`, or 404.
+async fn find_tour(
+    pool: &PgPool,
+    cache: &TourCache,
+    query: &TourQuery,
+) -> Result<(FoundTours, crate::tours::Tour), ApiError> {
+    // Tours are picked greedily, quickest first: the longest list contains every shorter one
+    let mut found = find_tours(pool, cache, &query.to, MAX_TOURS).await?;
+    let position = found
+        .tours
+        .iter()
+        .position(|tour| tour.start.id == query.from)
+        .ok_or_else(|| ApiError::not_found("no tour from this start to this place"))?;
+    let tour = found.tours.swap_remove(position);
+    Ok((found, tour))
+}
+
+/// `GET /v1/tours/detail?to=&from=`: everything a tour's detail card shows. The summary of the
+/// list plus a description, the grade explained, the elevation profile every 50 m with the
+/// position of each sample (`[distance_m, ele, lon, lat]`: hovering the chart can mark the spot on
+/// the map), highest and lowest points, the long climbs and descents, and the named places passed.
+pub async fn tour_detail(
+    State(pool): State<PgPool>,
+    State(cache): State<std::sync::Arc<TourCache>>,
+    Query(query): Query<TourQuery>,
+) -> Result<Json<Value>, ApiError> {
+    use crate::detail;
+
+    let (found, tour) = find_tour(&pool, &cache, &query).await?;
+    let track = detail::track(&tour);
+    let samples = detail::samples(&track);
+    let (climbs, descents) = detail::slopes(&samples);
+    let waypoints = detail::waypoints(&samples, &found.index.landmarks);
+    let (grade_name, grade_meaning) = detail::difficulty_info(&tour.difficulty);
+    let round_1 = |v: f64| (v * 10.0).round() / 10.0;
+    let round_6 = |v: f64| (v * 1e6).round() / 1e6;
+    let point = |sample: &detail::Sample| {
+        json!({
+            "ele": sample.ele.round(),
+            "distance_m": sample.distance_m.round(),
+            "position": [round_6(sample.position.0), round_6(sample.position.1)],
+        })
     };
-    let index = cache.get(&pool).await?;
-    let limit = query.limit.unwrap_or(6).clamp(1, 10);
-    let place_name = name.clone().unwrap_or_else(|| "the place".to_owned());
-    let tours: Vec<Value> = crate::tours::tours(&index.network, &index.starts, (lon, lat), REACH_M, limit)
-        .into_iter()
-        .map(|tour| {
-            let mut lines = vec![rounded(&tour.up.line)];
-            let mut route_ids = tour.up.route_ids.clone();
-            // The way down: the loop's other way (walked backwards), or the way up again
-            let via_down: Vec<String> = match &tour.down {
-                Some(down) => {
-                    lines.push(rounded(&down.line.iter().rev().copied().collect::<Vec<_>>()));
-                    route_ids.extend(down.route_ids.iter().rev());
-                    down.via.iter().rev().cloned().collect()
-                }
-                None => tour.up.via.iter().rev().cloned().collect(),
-            };
+    let slope = |slope: &detail::Slope| {
+        json!({
+            "from_m": slope.from_m.round(),
+            "to_m": slope.to_m.round(),
+            "change_m": slope.change_m.round(),
+            "gradient_pct": round_1(slope.gradient_pct),
+            "max_gradient_pct": round_1(slope.max_gradient_pct),
+        })
+    };
+
+    let mut card = tour_summary(&tour, &query.to, &found.place_name);
+    card["description"] = Value::from(detail::description(&tour, &found.place_name));
+    card["fitness"] = Value::from(detail::fitness(tour.duration_min, tour.ascent_m));
+    card["grade"] = json!({
+        "code": tour.difficulty,
+        "name": grade_name,
+        "meaning": grade_meaning,
+    });
+    card["profile"] = json!({
+        "step_m": detail::SAMPLE_STEP_M,
+        "columns": ["distance_m", "ele", "lon", "lat"],
+        "samples": samples
+            .iter()
+            .map(|s| [s.distance_m.round(), round_1(s.ele), round_6(s.position.0), round_6(s.position.1)])
+            .collect::<Vec<_>>(),
+    });
+    if let Some((highest, lowest)) = detail::extremes(&samples) {
+        card["highest"] = point(&highest);
+        card["lowest"] = point(&lowest);
+    }
+    card["climbs"] = climbs.iter().map(slope).collect();
+    card["descents"] = descents.iter().map(slope).collect();
+    card["waypoints"] = waypoints
+        .iter()
+        .map(|w| {
             json!({
-                "shape": match tour.shape { Shape::OutAndBack => "out_and_back", Shape::Loop => "loop" },
-                "title": format!("{place_name} from {}", tour.start.name),
-                "start": {
-                    "id": tour.start.id,
-                    "name": tour.start.name,
-                    "kind": match tour.start.kind { AccessKind::CarPark => "car_park", AccessKind::Village => "village" },
-                    "position": [tour.start.position.0, tour.start.position.1],
-                    "ele": tour.up.start_ele.round(),
-                },
-                "via_up": tour.up.via,
-                "via_down": via_down,
-                "route_ids": route_ids,
-                "length_m": tour.length_m.round(),
-                "ascent_m": tour.ascent_m.round(),
-                "descent_m": tour.descent_m.round(),
-                "duration_min": tour.duration_min,
-                "difficulty": tour.difficulty,
-                "ele_max": tour.max_ele.round(),
-                "geometry": { "type": "MultiLineString", "coordinates": lines },
+                "id": w.landmark.id,
+                "name": w.landmark.name,
+                "kind": w.landmark.kind,
+                "ele": w.landmark.ele.map(f64::round),
+                "distance_m": w.distance_m.round(),
+                "position": [w.landmark.position.0, w.landmark.position.1],
             })
         })
         .collect();
+    card["gpx"] = Value::from(format!("v1/tours/gpx?to={}&from={}", query.to, query.from));
     Ok(Json(json!({
-        "place": { "id": query.to, "name": name, "kind": kind, "ele": ele, "position": [lon, lat] },
-        "tours": tours,
-        "data": data,
+        "place": found.place,
+        "tour": card,
+        "data": found.data,
     })))
+}
+
+/// `GET /v1/tours/gpx?to=&from=`: the round trip as GPX 1.1, one track with elevations, the named
+/// places passed as waypoints, and the OpenStreetMap credit.
+pub async fn tour_gpx(
+    State(pool): State<PgPool>,
+    State(cache): State<std::sync::Arc<TourCache>>,
+    Query(query): Query<TourQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    use crate::detail;
+    use gpx::{Gpx, GpxVersion, Link, Metadata, Track, TrackSegment, Waypoint};
+
+    let (found, tour) = find_tour(&pool, &cache, &query).await?;
+    let title = format!("{} from {}", found.place_name, tour.start.name);
+    let track = detail::track(&tour);
+    let samples = detail::samples(&track);
+    let elevations = detail::elevations(&track);
+
+    let mut segment = TrackSegment::new();
+    for (&(lon, lat), &ele) in track.line.iter().zip(&elevations) {
+        let mut point = Waypoint::new(geo_types::Point::new(lon, lat));
+        point.elevation = ele.map(|e| (e * 10.0).round() / 10.0);
+        segment.points.push(point);
+    }
+    let mut gpx_track = Track::new();
+    gpx_track.name = Some(title.clone());
+    gpx_track.segments.push(segment);
+    let waypoints = detail::waypoints(&samples, &found.index.landmarks)
+        .into_iter()
+        .map(|w| {
+            let mut point = Waypoint::new(geo_types::Point::new(
+                w.landmark.position.0,
+                w.landmark.position.1,
+            ));
+            point.name = Some(w.landmark.name);
+            point.elevation = w.landmark.ele;
+            point.type_ = Some(w.landmark.kind);
+            point
+        })
+        .collect();
+    let file = Gpx {
+        version: GpxVersion::Gpx11,
+        creator: Some("Aret".to_owned()),
+        metadata: Some(Metadata {
+            name: Some(title),
+            description: Some(format!(
+                "{ATTRIBUTION}, {LICENSE} (https://www.openstreetmap.org/copyright). Elevation \
+                 TINITALY/INGV, CC BY 4.0. {}",
+                detail::description(&tour, &found.place_name)
+            )),
+            links: vec![Link {
+                href: "https://www.openstreetmap.org/copyright".to_owned(),
+                text: Some("OpenStreetMap".to_owned()),
+                ..Link::default()
+            }],
+            ..Metadata::default()
+        }),
+        waypoints,
+        tracks: vec![gpx_track],
+        ..Gpx::default()
+    };
+    let mut bytes = Vec::new();
+    gpx::write(&file, &mut bytes).map_err(|error| {
+        tracing::error!(%error, "writing tour GPX failed");
+        ApiError::internal()
+    })?;
+    let file_name: String = format!("{}-{}", query.to, query.from)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    Ok((
+        [
+            (CONTENT_TYPE, "application/gpx+xml".to_owned()),
+            (
+                CONTENT_DISPOSITION,
+                format!("attachment; filename=\"aret-tour-{file_name}.gpx\""),
+            ),
+        ],
+        bytes,
+    ))
 }
 
 /// longitude, latitude, name, kind, elevation of the place a tour goes to.
@@ -471,6 +694,8 @@ pub struct TourIndex {
     pub network: crate::network::Network,
     /// Car parks and villages attached to the network.
     pub starts: Vec<crate::tours::Access>,
+    /// Peaks, passes, huts, water and villages a tour can pass.
+    pub landmarks: crate::detail::Landmarks,
 }
 
 /// Keeps the [`TourIndex`] of the loaded catalogue; rebuilt when a new catalogue is loaded.
@@ -531,6 +756,13 @@ async fn build_index(pool: &PgPool, version: String) -> Result<TourIndex, sqlx::
     let places: Vec<(String, Option<String>, String, f64, f64)> = sqlx::query_as(
         "SELECT id, name, kind, ST_X(geom), ST_Y(geom) FROM places \
          WHERE kind = 'trailhead' OR (kind IN ('settlement', 'peak', 'pass', 'hut') AND searchable)",
+    )
+    .fetch_all(pool)
+    .await?;
+    // Named peaks, passes, huts and villages; water even unnamed (worth knowing where it is)
+    let landmark_rows: Vec<LandmarkRow> = sqlx::query_as(
+        "SELECT id, name, kind, type, ele, ST_X(geom), ST_Y(geom) FROM places \
+         WHERE (kind IN ('settlement', 'peak', 'pass', 'hut') AND name IS NOT NULL) OR kind = 'water'",
     )
     .fetch_all(pool)
     .await?;
@@ -630,10 +862,31 @@ async fn build_index(pool: &PgPool, version: String) -> Result<TourIndex, sqlx::
                 })
             })
             .collect();
+        let landmarks = crate::detail::Landmarks::new(
+            landmark_rows
+                .into_iter()
+                .map(
+                    |(id, name, kind, kind_type, ele, lon, lat)| crate::detail::Landmark {
+                        name: name.unwrap_or_else(|| {
+                            match kind_type.as_deref() {
+                                Some("spring") => "Spring",
+                                _ => "Drinking water",
+                            }
+                            .to_owned()
+                        }),
+                        id,
+                        kind,
+                        ele,
+                        position: (lon, lat),
+                    },
+                )
+                .collect(),
+        );
         TourIndex {
             version,
             network,
             starts,
+            landmarks,
         }
     })
     .await
@@ -647,6 +900,17 @@ async fn build_index(pool: &PgPool, version: String) -> Result<TourIndex, sqlx::
     );
     Ok(index)
 }
+
+/// id, name, kind, type, elevation, longitude, latitude of a landmark.
+type LandmarkRow = (
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<f64>,
+    f64,
+    f64,
+);
 
 /// osm_id, name, ref, difficulty, geometry (GeoJSON), profiles.
 type RouteRow = (
