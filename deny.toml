@@ -20,6 +20,9 @@ allow = [
   "Zlib",
   "Unicode-3.0",
   "Unicode-DFS-2016",
+  # Mozilla's root certificate list (webpki-root-certs, via reqwest's TLS for places-svc): a
+  # permissive licence for data, compatible with AGPL-3.0; only asks that its text travel with it
+  "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 

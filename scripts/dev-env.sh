@@ -19,7 +19,7 @@ random_hex() { openssl rand -hex 16; }
 # ---------------------------------------------------------------- .env
 # Every variable the stack needs. Existing values are kept; missing ones are added with a random
 # value (so pulling a new service never breaks your .env).
-VARIABLES="POSTGRES_PASSWORD KRATOS_DB_PASSWORD TRACKS_DB_PASSWORD IDENTITY_DB_PASSWORD \
+VARIABLES="POSTGRES_PASSWORD KRATOS_DB_PASSWORD TRACKS_DB_PASSWORD IDENTITY_DB_PASSWORD PLACES_DB_PASSWORD \
 KRATOS_COOKIE_SECRET KRATOS_CIPHER_SECRET KRATOS_WEBHOOK_SECRET RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY"
 
 if [[ ! -e .env ]]; then

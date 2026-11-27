@@ -49,6 +49,11 @@ async-nats = { version = "0.53", default-features = false, features = ["jetstrea
 
 # streams (NATS JetStream consumers)
 futures-util = { version = "0.3.34", default-features = false }
+# places-svc tours: geodesic distances (same crate as aret-maps' route catalogue)
+geo = { version = "0.33.1", default-features = false }
+# places-svc: read the gzip catalogue files and check their SHA-256
+flate2 = "1.1.11"
+sha2 = "0.11.2"
 # HTTP client for the Kratos admin API (identity-svc). No TLS: Kratos is on the private network.
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 # constant-time comparison of shared secrets (Kratos web hook)

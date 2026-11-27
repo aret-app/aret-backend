@@ -1,0 +1,26 @@
+{
+  "built_at": "2026-11-27T12:53:54Z",
+  "osm_data_at": "2026-11-14T21:20:41Z",
+  "area": [
+    10.3,
+    44.01,
+    10.36,
+    44.05
+  ],
+  "license": "ODbL-1.0",
+  "attribution": "© OpenStreetMap contributors",
+  "files": {
+    "routes": {
+      "path": "routes.geojson.gz",
+      "count": 32,
+      "bytes": 92810,
+      "sha256": "c9a8174fcf8163954fb18f32f8b7b38278f072e49c97d85ebc4a9871b0d3b41e"
+    },
+    "places": {
+      "path": "places.geojson.gz",
+      "count": 81,
+      "bytes": 3137,
+      "sha256": "3556d7ae1619e8d020782cd13036de8a54e155e1849e39e06c3bc479a8d3d7d3"
+    }
+  }
+}

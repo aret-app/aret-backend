@@ -1,5 +1,5 @@
 // Aret test console: service status, Kratos accounts (browser flows) and API calls.
-import { showRoutes, showTrack } from "./map.js";
+import { TOUR_COLORS, clearTours, markTourPoint, showRoutes, showTours, showTrack, showWaypoints } from "./map.js";
 
 // Everything goes through the gateway (dev/gateway/Caddyfile):
 //   /kratos/*  → Ory Kratos public API      /api/<service>/*  → our Rust services
@@ -625,4 +625,306 @@ refreshSession();
 $("#show-routes").addEventListener("change", (event) => {
   showRoutes(event.currentTarget.checked);
   $("#routes-legend").hidden = !event.currentTarget.checked;
+});
+
+// ---------------------------------------------------------------- tours (places-svc)
+
+const PLACES = `${GATEWAY}/api/places`;
+const escapeHtml = (text) => String(text ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const hoursMinutes = (minutes) =>
+  minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, "0")}`;
+// "CAI 9 → CAI 125 → CAI 126" reads better as "CAI 9 → 125 → 126"
+const ways = (via) =>
+  via.map((name, i) => (i > 0 && name.startsWith("CAI ") && via[i - 1].startsWith("CAI ") ? name.slice(4) : name)).join(" → ");
+let searchTimer = null;
+let shown = null; // { place, tours }
+
+function searchMessage(text, kind = "") {
+  const element = $("#search-message");
+  element.textContent = text;
+  element.className = `message ${kind}`;
+}
+
+$("#place-search").addEventListener("input", (event) => {
+  clearTimeout(searchTimer);
+  const query = event.currentTarget.value.trim();
+  if (query.length < 2) {
+    $("#place-results").replaceChildren();
+    return;
+  }
+  // Wait until typing pauses, so one search runs per word, not per key
+  searchTimer = setTimeout(() => findPlaces(query), 250);
+});
+
+async function findPlaces(query) {
+  const result = await call("GET", `${PLACES}/v1/places?q=${encodeURIComponent(query)}`);
+  const list = $("#place-results");
+  list.replaceChildren();
+  if (!result.ok) return searchMessage(result.data?.detail ?? `Search failed (HTTP ${result.status}).`, "bad");
+  searchMessage(result.data.places.length ? "" : "No place found.");
+  for (const place of result.data.places) {
+    const item = document.createElement("li");
+    const ele = place.ele != null ? ` · ${Math.round(place.ele)} m` : "";
+    item.innerHTML = `<button type="button" class="ghost"><strong>${escapeHtml(place.name)}</strong> <small>${escapeHtml(place.type)}${ele}</small></button>`;
+    item.querySelector("button").addEventListener("click", () => findTours(place));
+    list.append(item);
+  }
+}
+
+async function findTours(place) {
+  $("#place-results").replaceChildren();
+  $("#place-search").value = place.name;
+  searchMessage("Finding tours…");
+  const result = await call("GET", `${PLACES}/v1/tours?to=${encodeURIComponent(place.id)}`);
+  const list = $("#route-results");
+  list.replaceChildren();
+  if (!result.ok) return searchMessage(result.data?.detail ?? `Search failed (HTTP ${result.status}).`, "bad");
+  const tours = result.data.tours;
+  shown = { place: result.data.place, tours };
+  $("#tour-detail").hidden = true;
+  showWaypoints([]);
+  $("#tours-clear").hidden = false;
+  searchMessage(
+    tours.length
+      ? `${tours.length} tour${tours.length === 1 ? "" : "s"} to ${place.name}, quickest first. ` +
+          `Data © OpenStreetMap contributors (ODbL), ${result.data.data.osm_data_at?.slice(0, 10) ?? ""}.`
+      : `No tour to ${place.name} from a car park or village on the marked trails.`,
+  );
+  tours.forEach((tour, index) => {
+    const item = document.createElement("li");
+    item.className = "tour";
+    const shape = tour.shape === "loop" ? "Loop" : "Out &amp; back";
+    const down = tour.shape === "loop" ? `<br><small>down: ${escapeHtml(ways(tour.via_down))}</small>` : "";
+    item.innerHTML =
+      `<button type="button" class="tour-card">` +
+      `<span class="tour-number" style="background:${TOUR_COLORS[index % TOUR_COLORS.length]}">${index + 1}</span>` +
+      `<span><strong>${escapeHtml(tour.title)}</strong> <span class="badge">${shape}</span><br>` +
+      `⏱ ${hoursMinutes(tour.duration_min)} · ${(tour.length_m / 1000).toFixed(1)} km · ↗ ${Math.round(tour.ascent_m)} m · ` +
+      `${escapeHtml(tour.difficulty)} · start ${Math.round(tour.start.ele)} m<br>` +
+      `<small>up: ${escapeHtml(ways(tour.via_up))}</small>${down}</span></button>`;
+    item.querySelector("button").addEventListener("click", () => selectTour(index));
+    list.append(item);
+  });
+  // The difficulty legend doesn't apply while only the tours are on the map
+  $("#routes-legend").hidden = true;
+  if (tours.length) showTours(shown.place, tours);
+}
+
+async function selectTour(index) {
+  if (!shown) return;
+  document.querySelectorAll("#route-results .tour").forEach((item, i) => item.classList.toggle("selected", i === index));
+  showTours(shown.place, shown.tours, index);
+  const tour = shown.tours[index];
+  const result = await call(
+    "GET",
+    `${PLACES}/v1/tours/detail?to=${encodeURIComponent(shown.place.id)}&from=${encodeURIComponent(tour.start.id)}`,
+  );
+  if (!result.ok) return searchMessage(result.data?.detail ?? `Tour detail failed (HTTP ${result.status}).`, "bad");
+  showTourDetail(result.data.tour);
+}
+
+// ---------------------------------------------------------------- tour detail card
+
+const WAYPOINT_ICONS = { peak: "▲", pass: "⩘", hut: "⌂", water: "💧", settlement: "●" };
+const km = (metres) => `${(metres / 1000).toFixed(1)} km`;
+
+function showTourDetail(tour) {
+  $("#tour-detail").hidden = false;
+  $("#tour-detail-title").textContent = tour.title;
+  $("#tour-gpx").href = `${PLACES}/${tour.gpx}`;
+  $("#tour-stats").textContent =
+    `⏱ ${hoursMinutes(tour.duration_min)} · ${km(tour.length_m)} · ↗ ${tour.ascent_m} m · ↘ ${tour.descent_m} m · ` +
+    `highest ${tour.highest?.ele ?? tour.ele_max} m · lowest ${tour.lowest?.ele ?? "?"} m · ${tour.difficulty} · ` +
+    `${tour.shape === "loop" ? "loop" : "out & back"}`;
+
+  const slopes = [
+    ...tour.climbs.map((s) => ({ ...s, kind: "↗ climb" })),
+    ...tour.descents.map((s) => ({ ...s, kind: "↘ descent" })),
+  ].sort((a, b) => a.from_m - b.from_m);
+  $("#tour-slopes tbody").replaceChildren(
+    ...slopes.map((s) => {
+      const row = document.createElement("tr");
+      row.innerHTML =
+        `<td>${s.kind}</td><td>${km(s.from_m)}</td><td>${km(s.to_m - s.from_m)}</td><td>${s.change_m} m</td>` +
+        `<td>${s.gradient_pct}%</td><td>${s.max_gradient_pct}%</td>`;
+      row.addEventListener("mouseenter", () => elevationChart.highlight(s.from_m, s.to_m));
+      row.addEventListener("mouseleave", () => elevationChart.highlight(null));
+      return row;
+    }),
+  );
+  $("#tour-waypoints").replaceChildren(
+    ...tour.waypoints.map((w) => {
+      const item = document.createElement("li");
+      const ele = w.ele != null ? ` · ${w.ele} m` : "";
+      item.innerHTML = `${WAYPOINT_ICONS[w.kind] ?? "•"} <strong>${escapeHtml(w.name)}</strong> <small>${km(w.distance_m)}${ele}</small>`;
+      item.addEventListener("mouseenter", () => {
+        markTourPoint(w.position);
+        elevationChart.cursorAt(w.distance_m);
+      });
+      item.addEventListener("mouseleave", () => {
+        markTourPoint(null);
+        elevationChart.cursorAt(null);
+      });
+      return item;
+    }),
+  );
+  showWaypoints(tour.waypoints);
+  elevationChart.draw(tour.profile.samples, tour.waypoints, tour.difficulties);
+  // Legend: the grades on this tour, easiest first, with how far each is walked
+  const walked = {};
+  for (const g of tour.difficulties) walked[g.difficulty] = (walked[g.difficulty] ?? 0) + g.to_m - g.from_m;
+  $("#elevation-legend").innerHTML = Object.keys(GRADE_COLORS)
+    .filter((grade) => walked[grade] != null || (grade === "EEA" && Object.keys(walked).some((g) => g.startsWith("EEA"))))
+    .map((grade) => {
+      const metres = grade === "EEA"
+        ? Object.entries(walked).filter(([g]) => g.startsWith("EEA")).reduce((sum, [, m]) => sum + m, 0)
+        : walked[grade];
+      return `<span style="--c:${GRADE_COLORS[grade]}">${grade} ${km(metres)}</span>`;
+    })
+    .join("");
+}
+
+// Elevation chart colours: a ramp from easy (green) to hard (purple); grey = not recorded in OSM.
+// The map keeps each tour in its own colour.
+const GRADE_COLORS = { T: "#2e9d4b", E: "#d4b106", EE: "#e8590c", EEA: "#8e44ad", unknown: "#8a8a8a" };
+const gradeColor = (grade) => GRADE_COLORS[grade?.startsWith("EEA") ? "EEA" : grade] ?? GRADE_COLORS.unknown;
+
+/**
+ * The elevation profile as SVG: distance across, elevation up. Moving over it shows a cursor with
+ * distance and elevation and moves the marker on the map to that sample's position.
+ */
+const elevationChart = (() => {
+  const svg = $("#elevation-chart");
+  const NS = "http://www.w3.org/2000/svg";
+  const PAD = { left: 48, right: 12, top: 12, bottom: 24 };
+  let samples = [];
+  let stretches = [];
+  let scale = null;
+  let layer = null; // the cursor and highlight, redrawn on hover
+
+  const element = (name, attributes, parent = svg) => {
+    const node = document.createElementNS(NS, name);
+    for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+    parent.append(node);
+    return node;
+  };
+  // Round tick steps: 1, 2, 5 × 10^n
+  const step = (range, ticks) => {
+    const raw = range / ticks;
+    const power = 10 ** Math.floor(Math.log10(raw));
+    return [1, 2, 5, 10].map((m) => m * power).find((s) => s >= raw);
+  };
+
+  let drawn = null; // what draw() was given, to redraw at a new width
+  // The grade at distance `d`
+  const gradeAt = (d) => (stretches.find((g) => d >= g.from_m && d <= g.to_m) ?? stretches.at(-1))?.difficulty ?? "unknown";
+
+  function draw(newSamples, waypoints, difficulties) {
+    drawn = [newSamples, waypoints, difficulties];
+    samples = newSamples;
+    stretches = difficulties;
+    svg.replaceChildren();
+    if (samples.length < 2) return;
+    const width = svg.clientWidth || 800;
+    const height = svg.clientHeight || 200;
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    const length = samples.at(-1)[0];
+    const elevations = samples.map((s) => s[1]);
+    const yStep = step(Math.max(...elevations) - Math.min(...elevations) || 100, 4);
+    const low = Math.floor(Math.min(...elevations) / yStep) * yStep;
+    const high = Math.ceil(Math.max(...elevations) / yStep) * yStep;
+    const x = (d) => PAD.left + (d / length) * (width - PAD.left - PAD.right);
+    const y = (e) => height - PAD.bottom - ((e - low) / (high - low || 1)) * (height - PAD.top - PAD.bottom);
+    scale = { x, y, length, width, height };
+
+    for (let e = low; e <= high; e += yStep) {
+      element("line", { class: "grid", x1: PAD.left, x2: width - PAD.right, y1: y(e), y2: y(e) });
+      element("text", { x: PAD.left - 6, y: y(e) + 4, "text-anchor": "end" }).textContent = `${e} m`;
+    }
+    const xStep = step(length / 1000, 8) * 1000;
+    for (let d = 0; d <= length; d += xStep) {
+      element("text", { x: x(d), y: height - 6, "text-anchor": "middle" }).textContent = `${d / 1000} km`;
+    }
+    // Runs of samples with the same grade (taken in the middle of each 50 m step), each in its colour
+    const runs = [];
+    for (let i = 0; i + 1 < samples.length; i++) {
+      const grade = gradeAt((samples[i][0] + samples[i + 1][0]) / 2);
+      const run = runs.at(-1);
+      if (run && run.grade === grade) run.last = i + 1;
+      else runs.push({ grade, first: i, last: i + 1 });
+    }
+    for (const { grade, first, last } of runs) {
+      const part = samples.slice(first, last + 1);
+      const line = part.map((s, i) => `${i ? "L" : "M"}${x(s[0]).toFixed(1)},${y(s[1]).toFixed(1)}`).join("");
+      const color = gradeColor(grade);
+      element("path", { d: `${line}L${x(part.at(-1)[0])},${y(low)}L${x(part[0][0])},${y(low)}Z`, fill: color, "fill-opacity": 0.25 });
+      element("path", { d: line, fill: "none", stroke: color, "stroke-width": 2.5, "stroke-linejoin": "round", "stroke-linecap": "round" });
+    }
+    element("line", { class: "axis", x1: PAD.left, x2: width - PAD.right, y1: y(low), y2: y(low) });
+    for (const w of waypoints) {
+      element("line", { class: "waypoint-tick", x1: x(w.distance_m), x2: x(w.distance_m), y1: y(low), y2: y(low) + 5 });
+    }
+    layer = element("g", {});
+    element("rect", { x: 0, y: 0, width, height, fill: "transparent" });
+  }
+
+  // The sample nearest to distance `d`: samples are evenly spaced, so it's a division
+  const nearest = (d) => samples[Math.max(0, Math.min(samples.length - 1, Math.round((d / scale.length) * (samples.length - 1))))];
+
+  function cursorAt(distance) {
+    if (!layer) return;
+    layer.replaceChildren();
+    if (distance == null) return;
+    const [d, ele] = nearest(distance);
+    const { x, y, height, width } = scale;
+    element("line", { class: "cursor", x1: x(d), x2: x(d), y1: PAD.top, y2: height - PAD.bottom }, layer);
+    element("circle", { cx: x(d), cy: y(ele), r: 4, fill: "#ff5717", stroke: "#fff", "stroke-width": 2 }, layer);
+    const label = `${(d / 1000).toFixed(2)} km · ${Math.round(ele)} m · ${gradeAt(d)}`;
+    const labelX = Math.min(x(d) + 8, width - PAD.right - 160);
+    element("rect", { class: "readout-bg", x: labelX - 4, y: PAD.top, width: 160, height: 20, rx: 4 }, layer);
+    element("text", { class: "readout", x: labelX + 2, y: PAD.top + 14 }, layer).textContent = label;
+  }
+
+  function highlight(from, to) {
+    if (!layer) return;
+    layer.replaceChildren();
+    if (from == null) return;
+    const { x, height } = scale;
+    element("rect", { x: x(from), y: PAD.top, width: x(to) - x(from), height: height - PAD.top - PAD.bottom, fill: "#ff5717", "fill-opacity": 0.15 }, layer);
+  }
+
+  // Pointer events on the whole chart: distance from the pointer's x
+  svg.addEventListener("pointermove", (event) => {
+    if (!scale || samples.length < 2) return;
+    const box = svg.getBoundingClientRect();
+    const px = ((event.clientX - box.left) / box.width) * scale.width;
+    const d = ((px - PAD.left) / (scale.width - PAD.left - PAD.right)) * scale.length;
+    if (d < 0 || d > scale.length) return cursorAt(null), markTourPoint(null);
+    cursorAt(d);
+    const sample = nearest(d);
+    markTourPoint([sample[2], sample[3]]);
+  });
+  svg.addEventListener("pointerleave", () => {
+    cursorAt(null);
+    markTourPoint(null);
+  });
+  // Redraw at the new width when the window changes size
+  let last = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(last);
+    last = setTimeout(() => drawn && draw(...drawn), 200);
+  });
+
+  return { draw, cursorAt, highlight };
+})();
+
+$("#tours-clear").addEventListener("click", () => {
+  shown = null;
+  $("#route-results").replaceChildren();
+  $("#place-search").value = "";
+  $("#tours-clear").hidden = true;
+  searchMessage("");
+  $("#routes-legend").hidden = !$("#show-routes").checked;
+  $("#tour-detail").hidden = true;
+  clearTours($("#show-routes").checked);
 });

@@ -12,6 +12,7 @@ crates/
   aret-testing/  throwaway test databases (dev-dependency only)
 services/
   identity/      aret-identity  — adapter for Ory Kratos, user events (port 8081)
+  places/        aret-places    — place and route search, OSM catalogue (port 8083)
   tracks/        aret-tracks    — recorded tracks, PostGIS          (port 8082)
 ```
 
@@ -53,7 +54,7 @@ Everything the services need, on your computer, with one command ([compose.yaml]
 | Valkey (cache) | `valkey/valkey:9.0-alpine` | `:6379` |
 | RustFS (S3-compatible files; MinIO is discontinued) | `rustfs/rustfs:1.0.5` | S3 `:9000`, console http://127.0.0.1:9001/rustfs/console/ |
 | Mailpit (catches all emails) | `axllent/mailpit:v1.33` | web UI `:8025` |
-| aret-identity / aret-tracks | built from this repo | `:8081` / `:8082` |
+| aret-identity / aret-tracks / aret-places | built from this repo | `:8081` / `:8082` / `:8083` |
 | Gateway + test web app (Caddy) | `caddy:2.11-alpine` | **http://127.0.0.1:8080** |
 
 Requirements: Docker with Compose (e.g. `brew install colima docker docker-compose`, then `colima start`).
@@ -96,6 +97,9 @@ edit a file and reload the page.
   without a JWT → 401
 - **My tracks:** upload a GPX (try the synthetic `services/tracks/tests/fixtures/sample.gpx`), list your
   tracks, click one to draw it on the map, download it as GPX
+- **Find tours:** search a place (typos are fine), pick it, see ready-to-walk tours from car parks and
+  villages as cards; only those tours are on the map, and picking one focuses it and opens its detail
+  card: elevation chart (move over it to see the spot on the map), climbs, places along the way, GPX
 - **Map:** the pilot tiles from `aret-tiles.pages.dev` with a first outdoor style (MapLibre GL JS 6), plus
   the **pre-built routes** (OpenStreetMap hiking relations, aret-app/aret-maps#4, rebuilt weekly): colour =
   difficulty (T, E, EE, EEA, unknown), dashed = incomplete (gaps never joined), CAI numbers along the
@@ -178,6 +182,72 @@ web hook missed. (A blocking hook can't be used: Kratos runs it before the accou
 
 Check: after a sign-up, `curl -s '127.0.0.1:8222/jsz?streams=true' | jq '.account_details[0].stream_detail[0].state.messages'`.
 
+## Place and route search (aret-places)
+"Search a place → see the routes to it" (ADR-0017, aret-backend#24), answered from **our own copy** of
+OpenStreetMap: no search ever calls Overpass, Nominatim or another third-party service. **Public, no
+login** (reference data, ODbL); every answer has `data.attribution`, `data.license` and the data's dates.
+
+| Route | What it does |
+|---|---|
+| `GET /v1/places?q=pania dela croce&limit=` | Places by name: typo-, case- and accent-tolerant (`pg_trgm` + `unaccent`), exact and prefix matches first, peaks/passes/huts before villages and springs |
+| `GET /v1/routes?near=node/3140315349` (or `?lat=&lon=`, `&radius_m=`) | Routes that **reach** the place (≤ 200 m) first, then routes **nearby** (default 3 km, at most 10 km); each with length, ascent, descent, highest point, walking time, difficulty, `complete`, start point |
+| `GET /v1/routes/{osm_id}` | One route: all fields, GeoJSON geometry, elevation profiles |
+| `GET /v1/routes/{osm_id}/gpx` | The route as GPX 1.1 (one segment per line; gaps stay gaps), with the OpenStreetMap credit |
+| `GET /v1/tours?to=<place id>&limit=` | **Ready-to-walk tours**: round trips from a car park or village to the place and back, quickest first (below) |
+| `GET /v1/tours/detail?to=<place id>&from=<start id>` | One tour's **detail card** (below) |
+| `GET /v1/tours/gpx?to=<place id>&from=<start id>` | The tour as GPX 1.1: one track with elevations, the places passed as waypoints, the credits |
+
+**Data:** aret-maps publishes the catalogue weekly (`https://aret-tiles.pages.dev/catalogue/`: gzip
+GeoJSON + `version.json`). places-svc checks it at start and every 6 hours; a new build is downloaded,
+**verified against its SHA-256**, and replaces the old one **in one transaction**, so searches never see
+half a catalogue and a bad download keeps the old one. Until the first load, searches answer 503.
+`PLACES_CATALOGUE` can also be a local folder, e.g. `aret-maps/out/catalogue` mounted into the container.
+The full pilot catalogue (3,500 routes, 22,000 places) loads in under a minute.
+
+### Tours
+What a hiker wants after searching "Monte Sagro": a few complete outings, not the trail network.
+- **Trail network:** all routes, joined **only where they really share a point**: the same OSM node,
+  where paths branch or a route ends. A route ending 40 m from another stays unconnected, so a tour
+  never bridges a gap. Shared stretches count once.
+- **Starts:** car parks and trailheads within 300 m of a junction or route end, villages within 800 m.
+  An unnamed car park is named after the closest village (3 km) or named peak, pass or hut (800 m), e.g.
+  "car park near Foce del Piglionico".
+- **Way up:** the least walking effort through the network, up to 9 hours of effort one way.
+- **Loop:** a second search avoids the way up. If it shares at most 30% of it and takes at most 1.5×
+  as long, the tour goes up one way and down the other; otherwise it's an out-and-back.
+- **Totals:** distance, climbing and DIN 33466 time per direction. Difficulty is the hardest along the
+  way, "unknown" if any stretch is unknown. Up to 6 tours from starts at least 1 km apart.
+- **Answer:** `id` (`<place>~<start>`), title, `shape` (`loop`/`out_and_back`), `start` (id, name, kind,
+  position, elevation), `via_up`/`via_down` (route labels), totals, and `geometry` (just the walked part).
+- **Detail card** (`/v1/tours/detail`): everything the app's tour card shows, so the app computes nothing.
+  **Only numbers and data** (OpenStreetMap, TINITALY), no generated text: the summary above plus
+  `profile.samples` every 50 m as `[distance_m, ele, lon, lat]` (**the position lets the app move a marker
+  on the map while the user moves along the elevation chart**), `difficulties` (the CAI grade stretch by
+  stretch, `[{from_m, to_m, difficulty}]`, back to back over the whole tour, to colour the chart),
+  `highest`/`lowest` (elevation, distance, position), `climbs` and
+  `descents` of at least 100 m (from/to, change, average and steepest gradient over 100 m), `waypoints`
+  (peaks, passes, huts, villages and water within 75 m of the track, in order, with distance from the
+  start) and the `gpx` path. No social data (photos, ratings, comments): there is none yet.
+
+The network (about 10,000 junctions for the pilot region) is built **in the background** within
+15 seconds of a new catalogue, in about 10 s; tours then take ~100 ms.
+
+**Coverage follows OpenStreetMap's route relations** (ADR-0015), which in the pilot region hold almost
+all marked trails: aret-maps' `trail-gaps` measurement found 15,609 km of trail in hiking relations and
+only 39 km of marked paths outside any relation (2026-11-27). The classic Pania della Croce outing is
+there: from Foce del Piglionico by CAI 117 past Rifugio Rossi, then CAI 126 and the Via Normale. Tours
+can still miss a trail where a relation has a gap (91 incomplete routes; gaps are never bridged) or
+where the path is unmarked (about 12,000 km of other paths). Routing over every path (ADR-0006) comes
+later, with "design your own route".
+
+Route labels: "CAI 126" for CAI trails; other routes by name (e.g. "Fosco Maraini 6"), else their number.
+
+The test console's **Find tours** box uses it: type a place, pick it, and see its tours as cards (time,
+distance, climb, difficulty, routes up and down). **Only the tours are on the map**, numbered from their
+start; pick one to focus it and open its detail card (elevation chart coloured by difficulty, green T to
+purple EEA, with a hover marker on the map; climbs and descents, places along the way, GPX download), and Clear brings the map back. `GET /v1/routes?near=` (the whole network
+around a place) stays for the later "design your own route" mode.
+
 ## Account deletion (GDPR right to erasure)
 `DELETE /v1/account` on aret-identity (aret-backend#13); the test console has a **Delete my account** button.
 
@@ -224,6 +294,7 @@ Rules (all tested end to end):
 | `DATABASE_URL` | — (required by aret-tracks, aret-identity) | e.g. `postgres://tracks:<TRACKS_DB_PASSWORD>@127.0.0.1:5432/aret` |
 | `NATS_URL` | — (required by aret-identity) | e.g. `nats://127.0.0.1:4222` |
 | `NATS_URL` (aret-tracks) | — (required) | Same as above: tracks purges on `user.deleted` |
+| `PLACES_CATALOGUE` | `https://aret-tiles.pages.dev/catalogue/` | aret-places: catalogue URL or local folder |
 | `KRATOS_ADMIN_URL` | — (required by aret-identity) | Kratos admin API, e.g. `http://127.0.0.1:4434`; private network only |
 | `ARET_KRATOS_WEBHOOK_SECRET` | — (required by aret-identity) | Shared secret of the Kratos web hook, ≥ 32 characters (`KRATOS_WEBHOOK_SECRET` in `.env`) |
 | `ARET_JWKS_PATH` | `dev/secrets/jwks.public.json` | Public keys that verify Kratos session JWTs (services with login) |

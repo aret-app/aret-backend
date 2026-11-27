@@ -150,6 +150,21 @@
       <p id="tracks-message" class="message" role="status"></p>
     </section>
 
+    <section class="card search-card">
+      <div class="card-head">
+        <h2>Find tours <small>places-svc · OpenStreetMap catalogue</small></h2>
+        <button id="tours-clear" class="ghost" hidden>Clear</button>
+      </div>
+      <label>A peak, pass, hut or village
+        <input id="place-search" type="search" placeholder="e.g. Pania della Croce" autocomplete="off"></label>
+      <ul id="place-results" class="place-results"></ul>
+      <p id="search-message" class="message" role="status"></p>
+      <ol id="route-results" class="route-results"></ol>
+      <p class="hint">Typos and accents are fine. Tours start at a car park or village and follow marked
+        CAI trails, joined only where they really meet. Only the tours show on the map; pick one to focus it.
+        Times are estimates (DIN 33466, no breaks).</p>
+    </section>
+
     <section class="card map-card">
       <div class="card-head">
         <h2>Map <small>pilot tiles from aret-tiles.pages.dev</small></h2>
@@ -165,6 +180,33 @@
         <span style="--c:#8a8a8a">unknown</span>
         · <span class="dashed">dashed</span> = incomplete (gaps not joined). Click a route for details.
       </p>
+    </section>
+
+    <section class="card tour-detail-card" id="tour-detail" hidden>
+      <div class="card-head">
+        <h2 id="tour-detail-title">Tour</h2>
+        <a id="tour-gpx" class="button ghost" href="#">Download GPX</a>
+      </div>
+      <p id="tour-stats" class="tour-stats"></p>
+      <figure class="elevation">
+        <svg id="elevation-chart" role="img" aria-label="Elevation profile"></svg>
+        <p id="elevation-legend" class="legend"></p>
+        <figcaption class="hint">Elevation along the tour (TINITALY/INGV, CC BY 4.0), coloured by CAI difficulty
+          (OpenStreetMap). Move over the chart to see the spot on the map.</figcaption>
+      </figure>
+      <div class="tour-columns">
+        <div>
+          <h3>Climbs and descents</h3>
+          <table class="tracks" id="tour-slopes">
+            <thead><tr><th></th><th>From</th><th>Length</th><th>Change</th><th>Average</th><th>Steepest</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div>
+          <h3>Along the way</h3>
+          <ol id="tour-waypoints" class="waypoints"></ol>
+        </div>
+      </div>
     </section>
 
     <section class="card log-card">
