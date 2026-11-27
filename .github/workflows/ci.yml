@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [aret-identity, aret-tracks]
+        service: [aret-identity, aret-tracks, aret-places]
     uses: aret-app/aret-infra/.github/workflows/container-image.yml@main
     with:
       image: ${{ matrix.service }}

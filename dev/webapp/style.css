@@ -142,3 +142,11 @@ input[type="file"] { flex: 1; min-width: 0; }
 .route-ref { background: #d7301f; color: #fff; border-radius: 3px; padding: 0 4px; font-size: 0.75rem; }
 .route-warning { color: #a15c00; }
 .route-note { color: #666; font-size: 0.75rem; }
+
+/* Find routes */
+.search-card { grid-column: 1 / -1; }
+.search-card input[type="search"] { width: 100%; }
+.place-results, .route-results { list-style: none; padding: 0; margin: 0.5rem 0 0; display: grid; gap: 0.3rem; }
+.place-results button { width: 100%; text-align: left; }
+.route-results li { line-height: 1.4; }
+.swatch { display: inline-block; width: 22px; height: 6px; border-radius: 3px; margin-right: 0.4rem; vertical-align: middle; }

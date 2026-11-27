@@ -326,6 +326,77 @@ map.on("click", (event) => {
     .addTo(map);
 });
 
+// ---- search results (places-svc, aret-backend#24)
+
+/** One colour per found route (the first 12; the rest are grey, as repeated colours would mislead). */
+export const RESULT_COLORS = [
+  "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6", "#9a6324",
+  "#469990", "#808000", "#000075", "#e6beff",
+];
+
+/** Colour of the `index`-th search result. */
+export function resultColor(index) {
+  return RESULT_COLORS[index] ?? "#9aa1a8";
+}
+
+/**
+ * Highlights `routes` (from GET /v1/routes) in their own colours, marks `place` and zooms to the
+ * search radius around it (long routes may start far away); the other routes fade.
+ */
+export async function showSearchResults(place, routes, radiusM = 3000) {
+  await mapReady;
+  const ids = routes.map((route) => route.osm_id);
+  const colorById = ["match", ["get", "osm_id"]];
+  routes.forEach((route, index) => colorById.push(route.osm_id, resultColor(index)));
+  colorById.push("#888888");
+
+  if (!map.getLayer("search-routes")) {
+    map.addLayer({
+      id: "search-routes-casing",
+      type: "line",
+      source: "routes",
+      "source-layer": "routes",
+      filter: ["in", ["get", "osm_id"], ["literal", []]],
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 9, 4, 15, 10] },
+    });
+    map.addLayer({
+      id: "search-routes",
+      type: "line",
+      source: "routes",
+      "source-layer": "routes",
+      filter: ["in", ["get", "osm_id"], ["literal", []]],
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-width": ["interpolate", ["linear"], ["zoom"], 9, 2.5, 15, 6] },
+    });
+    map.addSource("search-place", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    map.addLayer({
+      id: "search-place",
+      type: "circle",
+      source: "search-place",
+      paint: { "circle-radius": 7, "circle-color": "#ffffff", "circle-stroke-color": "#111", "circle-stroke-width": 3 },
+    });
+  }
+  const filter = ["in", ["get", "osm_id"], ["literal", ids]];
+  map.setFilter("search-routes", filter);
+  map.setFilter("search-routes-casing", filter);
+  map.setPaintProperty("search-routes", "line-color", colorById);
+  for (const layer of ROUTE_LAYERS) map.setPaintProperty(layer, "line-opacity", ids.length ? 0.25 : 0.85);
+
+  const point = place?.position;
+  map.getSource("search-place").setData({
+    type: "FeatureCollection",
+    features: point ? [{ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: point } }] : [],
+  });
+  if (!point) return;
+  const dLat = radiusM / 111_320;
+  const dLon = dLat / Math.cos((point[1] * Math.PI) / 180);
+  map.fitBounds(
+    [[point[0] - dLon, point[1] - dLat], [point[0] + dLon, point[1] + dLat]],
+    { padding: 20, duration: 800 },
+  );
+}
+
 /** Shows or hides the pre-built routes. */
 export async function showRoutes(visible) {
   await mapReady;

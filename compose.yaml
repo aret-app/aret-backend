@@ -27,6 +27,7 @@ services:
       KRATOS_DB_PASSWORD: ${KRATOS_DB_PASSWORD:?run scripts/dev-env.sh}
       TRACKS_DB_PASSWORD: ${TRACKS_DB_PASSWORD:?run scripts/dev-env.sh}
       IDENTITY_DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?run scripts/dev-env.sh}
+      PLACES_DB_PASSWORD: ${PLACES_DB_PASSWORD:?run scripts/dev-env.sh}
     volumes:
       - postgres-data:/var/lib/postgresql   # Postgres 18 images keep data under this path
       # First start of the volume; afterwards `postgres-setup` re-runs it on every `up`
@@ -51,6 +52,7 @@ services:
       KRATOS_DB_PASSWORD: ${KRATOS_DB_PASSWORD:?run scripts/dev-env.sh}
       TRACKS_DB_PASSWORD: ${TRACKS_DB_PASSWORD:?run scripts/dev-env.sh}
       IDENTITY_DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?run scripts/dev-env.sh}
+      PLACES_DB_PASSWORD: ${PLACES_DB_PASSWORD:?run scripts/dev-env.sh}
     volumes:
       - ./dev/postgres/setup.sh:/setup.sh:ro
     depends_on:
@@ -195,8 +197,30 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  places:   # aret-backend#24: place and route search from the aret-maps catalogue (ADR-0017)
+    build:
+      context: .
+      args:
+        SERVICE: aret-places
+        PROFILE: docker-dev   # quick local builds (Cargo.toml); CI builds `release`
+    image: aret-places:dev
+    pull_policy: build   # built from this repo, never downloaded
+    environment:
+      RUST_LOG: info
+      # Role `places` owns schema `places` in database `aret` (dev/postgres/setup.sh)
+      DATABASE_URL: postgres://places:${PLACES_DB_PASSWORD:?run scripts/dev-env.sh}@postgres:5432/aret
+      # Where the weekly catalogue is published (aret-maps); a local folder works too, e.g.
+      # mount ../aret-maps/out/catalogue and set /catalogue
+      PLACES_CATALOGUE: https://aret-tiles.pages.dev/catalogue/
+    ports:
+      - "127.0.0.1:8083:8080"
+    depends_on:
+      postgres-setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   # ---------------------------------------------------------------- test web app
-  gateway:   # http://127.0.0.1:8080 — test web app + /kratos, /api/identity, /api/tracks
+  gateway:   # http://127.0.0.1:8080 — test web app + /kratos, /api/identity, /api/tracks, /api/places
     image: caddy:2.11-alpine
     volumes:
       - ./dev/gateway/Caddyfile:/etc/caddy/Caddyfile:ro
@@ -209,6 +233,8 @@ services:
       identity:
         condition: service_started
       tracks:
+        condition: service_started
+      places:
         condition: service_started
     restart: unless-stopped
 

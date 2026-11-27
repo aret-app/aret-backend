@@ -16,7 +16,7 @@ set -eu
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   -v kratos_password="$KRATOS_DB_PASSWORD" \
   -v tracks_password="$TRACKS_DB_PASSWORD" \
-  -v identity_password="$IDENTITY_DB_PASSWORD" <<'EOSQL'
+  -v identity_password="$IDENTITY_DB_PASSWORD" -v places_password="$PLACES_DB_PASSWORD" <<'EOSQL'
 SELECT 'CREATE ROLE kratos LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'kratos')\gexec
 ALTER ROLE kratos PASSWORD :'kratos_password';
 SELECT 'CREATE DATABASE kratos OWNER kratos'
@@ -33,6 +33,14 @@ SELECT 'CREATE ROLE identity LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE
 ALTER ROLE identity PASSWORD :'identity_password';
 CREATE SCHEMA IF NOT EXISTS identity AUTHORIZATION identity;
 ALTER ROLE identity SET search_path = identity, public;
+
+-- places-svc (aret-backend#24): typo- and accent-tolerant name search
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS unaccent;
+SELECT 'CREATE ROLE places LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'places')\gexec
+ALTER ROLE places PASSWORD :'places_password';
+CREATE SCHEMA IF NOT EXISTS places AUTHORIZATION places;
+ALTER ROLE places SET search_path = places, public;
 EOSQL
 
 echo "aret: database roles and schemas are set up (kratos, tracks, identity)"

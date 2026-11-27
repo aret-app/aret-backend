@@ -49,6 +49,9 @@
 	handle_path /api/tracks/* {
 		reverse_proxy tracks:8080
 	}
+	handle_path /api/places/* {
+		reverse_proxy places:8080
+	}
 	handle {
 		header Cache-Control "no-store"   # always load the latest version while developing
 		root * /srv/webapp

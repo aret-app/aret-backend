@@ -150,6 +150,19 @@
       <p id="tracks-message" class="message" role="status"></p>
     </section>
 
+    <section class="card search-card">
+      <div class="card-head">
+        <h2>Find routes <small>places-svc · OpenStreetMap catalogue</small></h2>
+      </div>
+      <label>A peak, pass, hut or village
+        <input id="place-search" type="search" placeholder="e.g. Pania della Croce" autocomplete="off"></label>
+      <ul id="place-results" class="place-results"></ul>
+      <p id="search-message" class="message" role="status"></p>
+      <ol id="route-results" class="route-results"></ol>
+      <p class="hint">Typos and accents are fine. Routes that <strong>reach</strong> the place come first, then routes
+        <strong>nearby</strong>; each has its own colour on the map. Times are estimates (DIN 33466, no breaks).</p>
+    </section>
+
     <section class="card map-card">
       <div class="card-head">
         <h2>Map <small>pilot tiles from aret-tiles.pages.dev</small></h2>

@@ -12,6 +12,7 @@ crates/
   aret-testing/  throwaway test databases (dev-dependency only)
 services/
   identity/      aret-identity  — adapter for Ory Kratos, user events (port 8081)
+  places/        aret-places    — place and route search, OSM catalogue (port 8083)
   tracks/        aret-tracks    — recorded tracks, PostGIS          (port 8082)
 ```
 
@@ -53,7 +54,7 @@ Everything the services need, on your computer, with one command ([compose.yaml]
 | Valkey (cache) | `valkey/valkey:9.0-alpine` | `:6379` |
 | RustFS (S3-compatible files; MinIO is discontinued) | `rustfs/rustfs:1.0.5` | S3 `:9000`, console http://127.0.0.1:9001/rustfs/console/ |
 | Mailpit (catches all emails) | `axllent/mailpit:v1.33` | web UI `:8025` |
-| aret-identity / aret-tracks | built from this repo | `:8081` / `:8082` |
+| aret-identity / aret-tracks / aret-places | built from this repo | `:8081` / `:8082` / `:8083` |
 | Gateway + test web app (Caddy) | `caddy:2.11-alpine` | **http://127.0.0.1:8080** |
 
 Requirements: Docker with Compose (e.g. `brew install colima docker docker-compose`, then `colima start`).
@@ -96,6 +97,8 @@ edit a file and reload the page.
   without a JWT → 401
 - **My tracks:** upload a GPX (try the synthetic `services/tracks/tests/fixtures/sample.gpx`), list your
   tracks, click one to draw it on the map, download it as GPX
+- **Find routes:** search a place (typos are fine), pick it, see the routes that reach it in their own
+  colours on the map, with length, climb and time
 - **Map:** the pilot tiles from `aret-tiles.pages.dev` with a first outdoor style (MapLibre GL JS 6), plus
   the **pre-built routes** (OpenStreetMap hiking relations, aret-app/aret-maps#4, rebuilt weekly): colour =
   difficulty (T, E, EE, EEA, unknown), dashed = incomplete (gaps never joined), CAI numbers along the
@@ -178,6 +181,28 @@ web hook missed. (A blocking hook can't be used: Kratos runs it before the accou
 
 Check: after a sign-up, `curl -s '127.0.0.1:8222/jsz?streams=true' | jq '.account_details[0].stream_detail[0].state.messages'`.
 
+## Place and route search (aret-places)
+"Search a place → see the routes to it" (ADR-0017, aret-backend#24), answered from **our own copy** of
+OpenStreetMap: no search ever calls Overpass, Nominatim or another third-party service. **Public, no
+login** (reference data, ODbL); every answer has `data.attribution`, `data.license` and the data's dates.
+
+| Route | What it does |
+|---|---|
+| `GET /v1/places?q=pania dela croce&limit=` | Places by name: typo-, case- and accent-tolerant (`pg_trgm` + `unaccent`), exact and prefix matches first, peaks/passes/huts before villages and springs |
+| `GET /v1/routes?near=node/3140315349` (or `?lat=&lon=`, `&radius_m=`) | Routes that **reach** the place (≤ 200 m) first, then routes **nearby** (default 3 km, at most 10 km); each with length, ascent, descent, highest point, walking time, difficulty, `complete`, start point |
+| `GET /v1/routes/{osm_id}` | One route: all fields, GeoJSON geometry, elevation profiles |
+| `GET /v1/routes/{osm_id}/gpx` | The route as GPX 1.1 (one segment per line; gaps stay gaps), with the OpenStreetMap credit |
+
+**Data:** aret-maps publishes the catalogue weekly (`https://aret-tiles.pages.dev/catalogue/`: gzip
+GeoJSON + `version.json`). places-svc checks it at start and every 6 hours; a new build is downloaded,
+**verified against its SHA-256**, and replaces the old one **in one transaction**, so searches never see
+half a catalogue and a bad download keeps the old one. Until the first load, searches answer 503.
+`PLACES_CATALOGUE` can also be a local folder, e.g. `aret-maps/out/catalogue` mounted into the container.
+The full pilot catalogue (3,500 routes, 22,000 places) loads in under a minute.
+
+The test console's **Find routes** box uses it: type a place, pick it, and the routes appear on the map in
+their own colours with a comparison list.
+
 ## Account deletion (GDPR right to erasure)
 `DELETE /v1/account` on aret-identity (aret-backend#13); the test console has a **Delete my account** button.
 
@@ -224,6 +249,7 @@ Rules (all tested end to end):
 | `DATABASE_URL` | — (required by aret-tracks, aret-identity) | e.g. `postgres://tracks:<TRACKS_DB_PASSWORD>@127.0.0.1:5432/aret` |
 | `NATS_URL` | — (required by aret-identity) | e.g. `nats://127.0.0.1:4222` |
 | `NATS_URL` (aret-tracks) | — (required) | Same as above: tracks purges on `user.deleted` |
+| `PLACES_CATALOGUE` | `https://aret-tiles.pages.dev/catalogue/` | aret-places: catalogue URL or local folder |
 | `KRATOS_ADMIN_URL` | — (required by aret-identity) | Kratos admin API, e.g. `http://127.0.0.1:4434`; private network only |
 | `ARET_KRATOS_WEBHOOK_SECRET` | — (required by aret-identity) | Shared secret of the Kratos web hook, ≥ 32 characters (`KRATOS_WEBHOOK_SECRET` in `.env`) |
 | `ARET_JWKS_PATH` | `dev/secrets/jwks.public.json` | Public keys that verify Kratos session JWTs (services with login) |

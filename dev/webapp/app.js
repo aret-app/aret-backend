@@ -1,5 +1,5 @@
 // Aret test console: service status, Kratos accounts (browser flows) and API calls.
-import { showRoutes, showTrack } from "./map.js";
+import { resultColor, showRoutes, showSearchResults, showTrack } from "./map.js";
 
 // Everything goes through the gateway (dev/gateway/Caddyfile):
 //   /kratos/*  → Ory Kratos public API      /api/<service>/*  → our Rust services
@@ -626,3 +626,70 @@ $("#show-routes").addEventListener("change", (event) => {
   showRoutes(event.currentTarget.checked);
   $("#routes-legend").hidden = !event.currentTarget.checked;
 });
+
+// ---------------------------------------------------------------- find routes (places-svc)
+
+const PLACES = `${GATEWAY}/api/places`;
+const escapeHtml = (text) => String(text ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const hoursMinutes = (minutes) =>
+  minutes == null ? "—" : minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, "0")}`;
+let searchTimer = null;
+
+function searchMessage(text, kind = "") {
+  const element = $("#search-message");
+  element.textContent = text;
+  element.className = `message ${kind}`;
+}
+
+$("#place-search").addEventListener("input", (event) => {
+  clearTimeout(searchTimer);
+  const query = event.currentTarget.value.trim();
+  if (query.length < 2) {
+    $("#place-results").replaceChildren();
+    return;
+  }
+  // Wait until typing pauses, so one search runs per word, not per key
+  searchTimer = setTimeout(() => findPlaces(query), 250);
+});
+
+async function findPlaces(query) {
+  const result = await call("GET", `${PLACES}/v1/places?q=${encodeURIComponent(query)}`);
+  const list = $("#place-results");
+  list.replaceChildren();
+  if (!result.ok) return searchMessage(result.data?.detail ?? `Search failed (HTTP ${result.status}).`, "bad");
+  searchMessage(result.data.places.length ? "" : "No place found.");
+  for (const place of result.data.places) {
+    const item = document.createElement("li");
+    const ele = place.ele != null ? ` · ${Math.round(place.ele)} m` : "";
+    item.innerHTML = `<button type="button" class="ghost"><strong>${escapeHtml(place.name)}</strong> <small>${escapeHtml(place.type)}${ele}</small></button>`;
+    item.querySelector("button").addEventListener("click", () => findRoutes(place));
+    list.append(item);
+  }
+}
+
+async function findRoutes(place) {
+  $("#place-results").replaceChildren();
+  $("#place-search").value = place.name;
+  const result = await call("GET", `${PLACES}/v1/routes?near=${encodeURIComponent(place.id)}`);
+  const list = $("#route-results");
+  list.replaceChildren();
+  if (!result.ok) return searchMessage(result.data?.detail ?? `Search failed (HTTP ${result.status}).`, "bad");
+  const routes = result.data.routes;
+  const reaching = routes.filter((route) => route.relation === "reaches").length;
+  searchMessage(
+    `${place.name}: ${reaching} route${reaching === 1 ? "" : "s"} reach it, ${routes.length - reaching} nearby. ` +
+      `Data © OpenStreetMap contributors (ODbL), ${result.data.data.osm_data_at?.slice(0, 10) ?? ""}.`,
+  );
+  routes.forEach((route, index) => {
+    const title = route.name ?? (route.ref ? `CAI ${route.ref}` : `Route ${route.osm_id}`);
+    const climb = route.ascent_m != null ? ` · ↗ ${Math.round(route.ascent_m)} m` : "";
+    const item = document.createElement("li");
+    item.innerHTML =
+      `<span class="swatch" style="background:${resultColor(index)}"></span>` +
+      `<strong>${escapeHtml(title)}</strong> <small>${route.relation === "reaches" ? "reaches it" : `${Math.round(route.distance_m)} m away`}</small><br>` +
+      `<small>${(route.length_m / 1000).toFixed(1)} km${climb} · ⏱ ${hoursMinutes(route.duration_min)} · ${escapeHtml(route.difficulty)}` +
+      `${route.complete ? "" : " · ⚠ incomplete"}</small>`;
+    list.append(item);
+  });
+  showSearchResults(place, routes, result.data.radius_m);
+}
